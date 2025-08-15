@@ -31,6 +31,9 @@ ACCOUNTING_PLANS = [
     "Annual Accounting",
 ]
 
+EVENT_SERVICE = "EVENT BASED FILING"
+PT_SERVICE = "PROFESSION TAX RETURNS"
+
 # ------------------- Helpers -------------------
 def normalize_str(x: str) -> str:
     return (x or "").strip().upper()
@@ -38,11 +41,9 @@ def normalize_str(x: str) -> str:
 def load_matrices(uploaded_file: io.BytesIO | None):
     """Load Applicability and Fees matrices from uploaded file or local matrices.xlsx"""
     if uploaded_file is not None:
-        xl = pd.ExcelFile(uploaded_file)
-        source = "Uploaded file"
+        xl = pd.ExcelFile(uploaded_file); source = "Uploaded file"
     else:
-        xl = pd.ExcelFile("matrices.xlsx")
-        source = "matrices.xlsx"
+        xl = pd.ExcelFile("matrices.xlsx"); source = "matrices.xlsx"
 
     df_app = xl.parse("Applicability").fillna("")
     df_fees = xl.parse("Fees").fillna("")
@@ -68,11 +69,11 @@ def build_quote(
     df_app: pd.DataFrame,
     df_fees: pd.DataFrame,
     selected_accounting: str | None = None,
+    selected_event_subs: list[str] | None = None,
+    selected_pt_sub: str | None = None,
 ):
-    """Prepare the quotation table with requested formatting and filters."""
+    """Prepare the quotation table with required filtering & column names."""
     ct = normalize_str(client_type)
-
-    # Filter applicable services for client type
     applicable = (
         df_app
         .query("ClientType == @ct and Applicable == True")
@@ -80,14 +81,41 @@ def build_quote(
         .copy()
     )
 
-    # Keep only ONE Accounting plan (selected in UI)
+    # --- Accounting: keep only the one selected plan ---
     if selected_accounting:
         sel = normalize_str(selected_accounting)
-        is_acc = applicable["Service"].str.upper().eq("ACCOUNTING")
+        is_acc = applicable["Service"].eq("ACCOUNTING")
         applicable = pd.concat(
             [
                 applicable.loc[~is_acc],
-                applicable.loc[is_acc & (applicable["SubService"].str.upper() == sel)],
+                applicable.loc[is_acc & (applicable["SubService"] == sel)],
+            ],
+            ignore_index=True,
+        )
+
+    # --- Event Based Filing: include only user-selected sub-services (can be many) ---
+    is_event = applicable["Service"].eq(normalize_str(EVENT_SERVICE))
+    if selected_event_subs is not None:
+        if len(selected_event_subs) == 0:
+            applicable = applicable.loc[~is_event]  # exclude all Event Based Filing
+        else:
+            sel_set = {normalize_str(s) for s in selected_event_subs}
+            applicable = pd.concat(
+                [
+                    applicable.loc[~is_event],
+                    applicable.loc[is_event & (applicable["SubService"].isin(sel_set))],
+                ],
+                ignore_index=True,
+            )
+
+    # --- Profession Tax Returns: choose exactly one sub-service (radio) ---
+    is_pt = applicable["Service"].eq(normalize_str(PT_SERVICE))
+    if selected_pt_sub is not None:
+        sel_pt = normalize_str(selected_pt_sub)
+        applicable = pd.concat(
+            [
+                applicable.loc[~is_pt],
+                applicable.loc[is_pt & (applicable["SubService"] == sel_pt)],
             ],
             ignore_index=True,
         )
@@ -103,19 +131,14 @@ def build_quote(
     quoted["SubService"] = quoted["SubService"].str.title()
     quoted.sort_values(["Service", "SubService"], inplace=True)
 
-    # Compute total
-    total = float(quoted["FeeINR"].sum()) if not quoted.empty else 0.0
-
-    # Final output:
-    # - Drop ClientType column
-    # - Rename SubService -> Details
-    # - Rename FeeINR -> Annual Fees (Rs.)
+    # Final output columns
     out = (
         quoted.drop(columns=["ClientType"], errors="ignore")
         .rename(columns={"SubService": "Details", "FeeINR": "Annual Fees (Rs.)"})
         .loc[:, ["Service", "Details", "Annual Fees (Rs.)"]]
     )
 
+    total = float(out["Annual Fees (Rs.)"].sum()) if not out.empty else 0.0
     return out, total
 
 def make_pdf(client_name: str, client_type: str, df_quote: pd.DataFrame, total: float) -> bytes:
@@ -137,7 +160,7 @@ def make_pdf(client_name: str, client_type: str, df_quote: pd.DataFrame, total: 
     styles = getSampleStyleSheet()
     story = []
 
-    # --- Try to load a logo from repo root ---
+    # Logo (optional)
     def find_logo_path():
         for name in ("logo.png", "logo.jpg", "logo.jpeg"):
             if os.path.exists(name):
@@ -146,20 +169,17 @@ def make_pdf(client_name: str, client_type: str, df_quote: pd.DataFrame, total: 
 
     logo_path = find_logo_path()
     if logo_path:
-        # Scale logo to a max box while preserving aspect ratio
         max_w, max_h = 30*mm, 30*mm
         ir = ImageReader(logo_path)
-        orig_w, orig_h = ir.getSize()
-        ratio = min(max_w / orig_w, max_h / orig_h)
-        w, h = orig_w * ratio, orig_h * ratio
-        story.append(Image(logo_path, width=w, height=h))
+        ow, oh = ir.getSize()
+        r = min(max_w / ow, max_h / oh)
+        story.append(Image(logo_path, width=ow * r, height=oh * r))
         story.append(Spacer(1, 4))
 
-    # Header text
+    # Header
     story.append(Paragraph("<b>V. Purohit & Associates</b>", styles["Title"]))
     story.append(Paragraph("<b>Quotation</b>", styles["h2"]))
     story.append(Spacer(1, 6))
-
     meta_html = (
         f"<b>Client Name:</b> {client_name}<br/>"
         f"<b>Client Type:</b> {client_type}<br/>"
@@ -168,7 +188,7 @@ def make_pdf(client_name: str, client_type: str, df_quote: pd.DataFrame, total: 
     story.append(Paragraph(meta_html, styles["Normal"]))
     story.append(Spacer(1, 10))
 
-    # --- Table ---
+    # Table
     headers = ["Service", "Details", "Annual Fees (Rs.)"]
     data = [headers]
     for _, row in df_quote.iterrows():
@@ -177,7 +197,6 @@ def make_pdf(client_name: str, client_type: str, df_quote: pd.DataFrame, total: 
 
     table = Table(data, colWidths=[70*mm, 85*mm, 30*mm], repeatRows=1)
     table.setStyle(TableStyle([
-        # Header
         ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#f0f0f0")),
         ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
         ("ALIGN", (0,0), (-1,0), "CENTER"),
@@ -185,17 +204,15 @@ def make_pdf(client_name: str, client_type: str, df_quote: pd.DataFrame, total: 
         ("BOTTOMPADDING", (0,0), (-1,0), 8),
         ("TOPPADDING", (0,0), (-1,0), 8),
         ("LINEBELOW", (0,0), (-1,0), 0.5, colors.grey),
-        # Body
         ("ALIGN", (2,1), (2,-1), "RIGHT"),
         ("INNERGRID", (0,1), (-1,-1), 0.3, colors.HexColor("#d9d9d9")),
-        # Total row
         ("FONTNAME", (0,-1), (-1,-1), "Helvetica-Bold"),
         ("BACKGROUND", (0,-1), (-1,-1), colors.HexColor("#fafafa")),
     ]))
     story.append(table)
     story.append(Spacer(1, 8))
 
-    # Notes block
+    # Notes
     notes = (
         "<b>Note:</b><br/>"
         "1. The fees are exclusive of taxes and out-of-pocket expenses.<br/>"
@@ -209,22 +226,22 @@ def make_pdf(client_name: str, client_type: str, df_quote: pd.DataFrame, total: 
     return buf.getvalue()
 
 def build_status(df_app: pd.DataFrame, df_fees: pd.DataFrame) -> pd.DataFrame:
-    """Return a status table with Applicable counts and Missing/Zero fee counts per ClientType."""
+    """Status table with Applicable counts and Missing/Zero fee counts per ClientType."""
     active = df_app[df_app["Applicable"] == True].copy()
-    # Counts of applicable rows
     counts = (
-        active.groupby("ClientType").size().reindex(CLIENT_TYPES, fill_value=0).reset_index(name="Applicable services")
+        active.groupby("ClientType").size().reindex([normalize_str(x) for x in CLIENT_TYPES], fill_value=0)
+        .reset_index(name="Applicable services")
     )
-    # Missing or zero fees among applicable
     merged = active.merge(df_fees, on=["Service","SubService","ClientType"], how="left")
     missing_mask = merged["FeeINR"].isna() | (pd.to_numeric(merged["FeeINR"], errors="coerce").fillna(0.0) <= 0)
     miss = (
         merged[missing_mask]
         .groupby("ClientType").size()
-        .reindex(CLIENT_TYPES, fill_value=0)
+        .reindex([normalize_str(x) for x in CLIENT_TYPES], fill_value=0)
         .reset_index(name="Missing/Zero fees")
     )
     status = counts.merge(miss, on="ClientType")
+    status["ClientType"] = status["ClientType"].str.title()
     return status
 
 # ------------------- UI -------------------
@@ -253,7 +270,11 @@ with st.form("quote_form", clear_on_submit=False):
     client_name = st.text_input("Client Name*", "")
     client_type = st.selectbox("Client Type*", CLIENT_TYPES, index=0)
 
-    # Choose one accounting plan
+    # Determine available sub-services for dynamic controls (based on applicability)
+    ct_norm = normalize_str(client_type)
+    app_ct = df_app[(df_app["ClientType"] == ct_norm) & (df_app["Applicable"] == True)]
+
+    # Accounting (one plan)
     selected_accounting = st.radio(
         "Accounting – choose one plan",
         ACCOUNTING_PLANS,
@@ -261,31 +282,96 @@ with st.form("quote_form", clear_on_submit=False):
         horizontal=True,
     )
 
+    # Event Based Filing (multi-select; default none)
+    event_options = (
+        app_ct.loc[app_ct["Service"] == normalize_str(EVENT_SERVICE), "SubService"]
+        .dropna().unique().tolist()
+    )
+    event_options_tc = [s.title() for s in event_options if s]
+    selected_event_tc = st.multiselect(
+        f"{EVENT_SERVICE.title()} – select sub-services (choose any)",
+        sorted(event_options_tc),
+        default=[],
+        help="Only selected items will be included in the quotation.",
+    )
+
+    # Profession Tax Returns (choose exactly one if applicable)
+    pt_options = (
+        app_ct.loc[app_ct["Service"] == normalize_str(PT_SERVICE), "SubService"]
+        .dropna().unique().tolist()
+    )
+    pt_options_tc = [s.title() for s in pt_options if s]
+    selected_pt_tc = None
+    if len(pt_options_tc) > 0:
+        selected_pt_tc = st.radio(
+            f"{PT_SERVICE.title()} – choose one",
+            sorted(pt_options_tc),
+            index=0,
+            horizontal=True,
+        )
+
     generate = st.form_submit_button("Generate Table")
 
+# --- After submit: build, allow deletions, PDF ---
 if generate:
     if not client_name.strip():
         st.error("Please enter Client Name.")
     else:
-        df_quote, total = build_quote(
+        df_quote, _ = build_quote(
             client_name,
             client_type,
             df_app,
             df_fees,
             selected_accounting=selected_accounting,
+            selected_event_subs=selected_event_tc,
+            selected_pt_sub=selected_pt_tc,
         )
 
         if df_quote.empty:
             st.warning("No applicable services found for the selected Client Type.")
         else:
-            st.success("Quotation ready.")
-            st.dataframe(df_quote, use_container_width=True)
-            st.write(f"**Grand Total (Rs.):** {total:,.0f}")
+            st.success("Quotation ready. You can uncheck rows to exclude them.")
+            # Add Include boolean for row deletions
+            df_quote = df_quote.copy()
+            df_quote["Include"] = True
 
-            pdf_bytes = make_pdf(client_name, client_type, df_quote, total)
-            st.download_button(
-                "⬇️ Download PDF",
-                data=pdf_bytes,
-                file_name=f"Quotation_{client_name.replace(' ', '_')}.pdf",
-                mime="application/pdf",
+            # Persist across reruns
+            if "quote_table" not in st.session_state:
+                st.session_state["quote_table"] = df_quote
+            else:
+                # Reset to fresh on each Generate
+                st.session_state["quote_table"] = df_quote
+
+            edited = st.data_editor(
+                st.session_state["quote_table"],
+                use_container_width=True,
+                disabled=["Service", "Details", "Annual Fees (Rs.)"],
+                column_config={
+                    "Include": st.column_config.CheckboxColumn(help="Uncheck to remove this row from the quotation/PDF.")
+                },
+                num_rows="fixed",
+                key="quote_editor",
             )
+
+            # Filter included rows and compute total
+            filtered = edited[edited["Include"] == True].drop(columns=["Include"])
+            total_now = float(filtered["Annual Fees (Rs.)"].sum()) if not filtered.empty else 0.0
+
+            col1, col2 = st.columns([1,1])
+            with col1:
+                st.write(f"**Grand Total (Rs.):** {total_now:,.0f}")
+            with col2:
+                if st.button("Reset (include all rows)"):
+                    st.session_state["quote_table"]["Include"] = True
+                    st.rerun()
+
+            if filtered.empty:
+                st.info("All rows are excluded. Select at least one row to enable PDF.")
+            else:
+                pdf_bytes = make_pdf(client_name, client_type, filtered, total_now)
+                st.download_button(
+                    "⬇️ Download PDF",
+                    data=pdf_bytes,
+                    file_name=f"Quotation_{client_name.replace(' ', '_')}.pdf",
+                    mime="application/pdf",
+                )
