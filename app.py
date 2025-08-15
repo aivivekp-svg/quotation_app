@@ -196,7 +196,6 @@ def make_pdf(client_name: str, client_type: str, df_quote: pd.DataFrame, total: 
     doc.build(story)
     return buf.getvalue()
 
-
         if df_quote.empty:
             st.warning("No applicable services found for the selected Client Type.")
         else:
