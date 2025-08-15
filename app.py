@@ -39,8 +39,10 @@ def load_matrices(uploaded_file: io.BytesIO | None):
     """Load Applicability and Fees matrices from uploaded file or local matrices.xlsx"""
     if uploaded_file is not None:
         xl = pd.ExcelFile(uploaded_file)
+        source = "Uploaded file"
     else:
         xl = pd.ExcelFile("matrices.xlsx")
+        source = "matrices.xlsx"
 
     df_app = xl.parse("Applicability").fillna("")
     df_fees = xl.parse("Fees").fillna("")
@@ -58,7 +60,7 @@ def load_matrices(uploaded_file: io.BytesIO | None):
     if "FeeINR" in df_fees.columns:
         df_fees["FeeINR"] = pd.to_numeric(df_fees["FeeINR"], errors="coerce").fillna(0.0).astype(float)
 
-    return df_app, df_fees
+    return df_app, df_fees, source
 
 def build_quote(
     client_name: str,
@@ -206,6 +208,25 @@ def make_pdf(client_name: str, client_type: str, df_quote: pd.DataFrame, total: 
     doc.build(story)
     return buf.getvalue()
 
+def build_status(df_app: pd.DataFrame, df_fees: pd.DataFrame) -> pd.DataFrame:
+    """Return a status table with Applicable counts and Missing/Zero fee counts per ClientType."""
+    active = df_app[df_app["Applicable"] == True].copy()
+    # Counts of applicable rows
+    counts = (
+        active.groupby("ClientType").size().reindex(CLIENT_TYPES, fill_value=0).reset_index(name="Applicable services")
+    )
+    # Missing or zero fees among applicable
+    merged = active.merge(df_fees, on=["Service","SubService","ClientType"], how="left")
+    missing_mask = merged["FeeINR"].isna() | (pd.to_numeric(merged["FeeINR"], errors="coerce").fillna(0.0) <= 0)
+    miss = (
+        merged[missing_mask]
+        .groupby("ClientType").size()
+        .reindex(CLIENT_TYPES, fill_value=0)
+        .reset_index(name="Missing/Zero fees")
+    )
+    status = counts.merge(miss, on="ClientType")
+    return status
+
 # ------------------- UI -------------------
 st.set_page_config(page_title=APP_TITLE, page_icon="📄", layout="centered")
 st.title(APP_TITLE)
@@ -215,9 +236,15 @@ with st.sidebar:
     st.subheader("Data")
     uploaded = st.file_uploader("Upload matrices.xlsx (optional)", type=["xlsx"])
     try:
-        df_app, df_fees = load_matrices(uploaded)
+        df_app, df_fees, source = load_matrices(uploaded)
+        st.write(f"Source: **{source}**")
         st.write(f"Applicability rows: **{len(df_app):,}**")
         st.write(f"Fees rows: **{len(df_fees):,}**")
+        with st.expander("Data status", expanded=False):
+            service_defs = len(df_app[["Service","SubService"]].drop_duplicates())
+            st.write(f"Service definitions: **{service_defs}**")
+            status_df = build_status(df_app, df_fees)
+            st.dataframe(status_df, use_container_width=True)
     except Exception as e:
         st.error(f"Error loading matrices: {e}")
         st.stop()
