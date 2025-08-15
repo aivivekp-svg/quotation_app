@@ -117,11 +117,17 @@ def build_quote(
     return out, total
 
 def make_pdf(client_name: str, client_type: str, df_quote: pd.DataFrame, total: float) -> bytes:
-    """Build the PDF with required column names and number formatting (no ₹ symbol)."""
+    """PDF with centered headers, right-aligned amount column, clean borders, and notes block."""
     buf = io.BytesIO()
     doc = SimpleDocTemplate(
-        buf, pagesize=A4, leftMargin=18*mm, rightMargin=18*mm, topMargin=15*mm, bottomMargin=15*mm
+        buf,
+        pagesize=A4,
+        leftMargin=18*mm,
+        rightMargin=18*mm,
+        topMargin=15*mm,
+        bottomMargin=15*mm,
     )
+
     styles = getSampleStyleSheet()
     story = []
 
@@ -138,86 +144,58 @@ def make_pdf(client_name: str, client_type: str, df_quote: pd.DataFrame, total: 
     story.append(Paragraph(meta_html, styles["Normal"]))
     story.append(Spacer(1, 10))
 
-    # Table headers and rows (no Client Type column; no ₹ symbol)
+    # --- Table (no 'Client Type' column; header centered; amounts right; no ₹) ---
     headers = ["Service", "Details", "Annual Fees (Rs.)"]
     data = [headers]
 
     for _, row in df_quote.iterrows():
         amt = row["Annual Fees (Rs.)"]
-        amt_str = f"{amt:,.0f}"  # Indian-style separators can be added if needed
-        data.append([row["Service"], row["Details"], amt_str])
+        data.append([
+            row["Service"],
+            row["Details"],
+            f"{amt:,.0f}",  # no rupee symbol
+        ])
 
-    # Total row
-    data.append(["", "<b>Total</b>", f"<b>{total:,.0f}</b>"])
+    # Total row (bold via TableStyle, not HTML tags)
+    data.append(["", "Total", f"{total:,.0f}"])
 
-    tbl = Table(data, colWidths=[70*mm, 85*mm, 30*mm], repeatRows=1)
-    tbl.setStyle(
-        TableStyle(
-            [
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f0f0f0")),
-                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                ("ALIGN", (2, 1), (2, -1), "RIGHT"),
-                ("GRID", (0, 0), (-1, -1), 0.3, colors.grey),
-                ("BOTTOMPADDING", (0, 0), (-1, 0), 8),
-                ("TOPPADDING", (0, 0), (-1, 0), 8),
-                ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
-                ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#fafafa")),
-            ]
-        )
+    table = Table(data, colWidths=[70*mm, 85*mm, 30*mm], repeatRows=1)
+    table.setStyle(TableStyle([
+        # Header look
+        ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#f0f0f0")),
+        ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
+        ("ALIGN", (0,0), (-1,0), "CENTER"),
+        ("VALIGN", (0,0), (-1,0), "MIDDLE"),
+        ("BOTTOMPADDING", (0,0), (-1,0), 8),
+        ("TOPPADDING", (0,0), (-1,0), 8),
+        ("LINEBELOW", (0,0), (-1,0), 0.5, colors.grey),
+
+        # Body alignment and inner grid
+        ("ALIGN", (2,1), (2,-1), "RIGHT"),  # amount column
+        ("INNERGRID", (0,1), (-1,-1), 0.3, colors.HexColor("#d9d9d9")),
+        # No outer box => no line below the last row
+
+        # Total row bold + subtle background
+        ("FONTNAME", (0,-1), (-1,-1), "Helvetica-Bold"),
+        ("BACKGROUND", (0,-1), (-1,-1), colors.HexColor("#fafafa")),
+    ]))
+
+    story.append(table)
+    story.append(Spacer(1, 8))
+
+    # --- Notes block (exact text requested) ---
+    notes = (
+        "<b>Note:</b><br/>"
+        "1. The fees are exclusive of taxes and out-of-pocket expenses.<br/>"
+        "2. GST 18% extra.<br/>"
+        "3. Our scope is limited to the services listed above.<br/>"
+        "4. The above quotation is valid for a period of 30 days."
     )
-    story.append(tbl)
-    story.append(Spacer(1, 12))
-
-    terms = (
-        "<b>Notes:</b> Fees are exclusive of taxes and out-of-pocket expenses. "
-        "Scope is limited to listed services. Valid for 30 days."
-    )
-    story.append(Paragraph(terms, styles["Normal"]))
+    story.append(Paragraph(notes, styles["Normal"]))
 
     doc.build(story)
     return buf.getvalue()
 
-# ------------------- UI -------------------
-st.set_page_config(page_title=APP_TITLE, page_icon="📄", layout="centered")
-st.title(APP_TITLE)
-st.caption("Generate matrix-driven quotations and export to PDF")
-
-with st.sidebar:
-    st.subheader("Data")
-    uploaded = st.file_uploader("Upload matrices.xlsx (optional)", type=["xlsx"])
-    try:
-        df_app, df_fees = load_matrices(uploaded)
-        st.write(f"Applicability rows: **{len(df_app):,}**")
-        st.write(f"Fees rows: **{len(df_fees):,}**")
-    except Exception as e:
-        st.error(f"Error loading matrices: {e}")
-        st.stop()
-
-with st.form("quote_form", clear_on_submit=False):
-    client_name = st.text_input("Client Name*", "")
-    client_type = st.selectbox("Client Type*", CLIENT_TYPES, index=0)
-
-    # --- Choose exactly one Accounting plan (UI-only restriction) ---
-    selected_accounting = st.radio(
-        "Accounting – choose one plan",
-        ACCOUNTING_PLANS,
-        index=3,  # default to Annual
-        horizontal=True,
-    )
-
-    generate = st.form_submit_button("Generate Table")
-
-if generate:
-    if not client_name.strip():
-        st.error("Please enter Client Name.")
-    else:
-        df_quote, total = build_quote(
-            client_name,
-            client_type,
-            df_app,
-            df_fees,
-            selected_accounting=selected_accounting,
-        )
 
         if df_quote.empty:
             st.warning("No applicable services found for the selected Client Type.")
