@@ -144,7 +144,7 @@ def make_pdf(client_name: str, client_type: str, df_quote: pd.DataFrame, total: 
     story.append(Paragraph(meta_html, styles["Normal"]))
     story.append(Spacer(1, 10))
 
-    # --- Table (no 'Client Type' column; header centered; amounts right; no ₹) ---
+    # --- Table ---
     headers = ["Service", "Details", "Annual Fees (Rs.)"]
     data = [headers]
 
@@ -156,7 +156,7 @@ def make_pdf(client_name: str, client_type: str, df_quote: pd.DataFrame, total: 
             f"{amt:,.0f}",  # no rupee symbol
         ])
 
-    # Total row (bold via TableStyle, not HTML tags)
+    # Total row
     data.append(["", "Total", f"{total:,.0f}"])
 
     table = Table(data, colWidths=[70*mm, 85*mm, 30*mm], repeatRows=1)
@@ -173,7 +173,6 @@ def make_pdf(client_name: str, client_type: str, df_quote: pd.DataFrame, total: 
         # Body alignment and inner grid
         ("ALIGN", (2,1), (2,-1), "RIGHT"),  # amount column
         ("INNERGRID", (0,1), (-1,-1), 0.3, colors.HexColor("#d9d9d9")),
-        # No outer box => no line below the last row
 
         # Total row bold + subtle background
         ("FONTNAME", (0,-1), (-1,-1), "Helvetica-Bold"),
@@ -183,7 +182,7 @@ def make_pdf(client_name: str, client_type: str, df_quote: pd.DataFrame, total: 
     story.append(table)
     story.append(Spacer(1, 8))
 
-    # --- Notes block (exact text requested) ---
+    # --- Notes block ---
     notes = (
         "<b>Note:</b><br/>"
         "1. The fees are exclusive of taxes and out-of-pocket expenses.<br/>"
@@ -196,11 +195,52 @@ def make_pdf(client_name: str, client_type: str, df_quote: pd.DataFrame, total: 
     doc.build(story)
     return buf.getvalue()
 
+# ------------------- UI -------------------
+st.set_page_config(page_title=APP_TITLE, page_icon="📄", layout="centered")
+st.title(APP_TITLE)
+st.caption("Generate matrix-driven quotations and export to PDF")
+
+with st.sidebar:
+    st.subheader("Data")
+    uploaded = st.file_uploader("Upload matrices.xlsx (optional)", type=["xlsx"])
+    try:
+        df_app, df_fees = load_matrices(uploaded)
+        st.write(f"Applicability rows: **{len(df_app):,}**")
+        st.write(f"Fees rows: **{len(df_fees):,}**")
+    except Exception as e:
+        st.error(f"Error loading matrices: {e}")
+        st.stop()
+
+with st.form("quote_form", clear_on_submit=False):
+    client_name = st.text_input("Client Name*", "")
+    client_type = st.selectbox("Client Type*", CLIENT_TYPES, index=0)
+
+    # Choose one accounting plan
+    selected_accounting = st.radio(
+        "Accounting – choose one plan",
+        ACCOUNTING_PLANS,
+        index=3,
+        horizontal=True,
+    )
+
+    generate = st.form_submit_button("Generate Table")
+
+if generate:
+    if not client_name.strip():
+        st.error("Please enter Client Name.")
+    else:
+        df_quote, total = build_quote(
+            client_name,
+            client_type,
+            df_app,
+            df_fees,
+            selected_accounting=selected_accounting,
+        )
+
         if df_quote.empty:
             st.warning("No applicable services found for the selected Client Type.")
         else:
             st.success("Quotation ready.")
-            # Display with required headers; no Client Type column; no ₹
             st.dataframe(df_quote, use_container_width=True)
             st.write(f"**Grand Total (Rs.):** {total:,.0f}")
 
