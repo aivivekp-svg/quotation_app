@@ -117,7 +117,11 @@ def build_quote(
     return out, total
 
 def make_pdf(client_name: str, client_type: str, df_quote: pd.DataFrame, total: float) -> bytes:
-    """PDF with centered headers, right-aligned amount column, clean borders, and notes block."""
+    """PDF with centered headers, right-aligned amount column, clean borders, notes, and optional logo."""
+    import os
+    from reportlab.platypus import Image
+    from reportlab.lib.utils import ImageReader
+
     buf = io.BytesIO()
     doc = SimpleDocTemplate(
         buf,
@@ -131,7 +135,25 @@ def make_pdf(client_name: str, client_type: str, df_quote: pd.DataFrame, total: 
     styles = getSampleStyleSheet()
     story = []
 
-    # Header
+    # --- Try to load a logo from repo root ---
+    def find_logo_path():
+        for name in ("logo.png", "logo.jpg", "logo.jpeg"):
+            if os.path.exists(name):
+                return name
+        return None
+
+    logo_path = find_logo_path()
+    if logo_path:
+        # Scale logo to a max box while preserving aspect ratio
+        max_w, max_h = 30*mm, 30*mm
+        ir = ImageReader(logo_path)
+        orig_w, orig_h = ir.getSize()
+        ratio = min(max_w / orig_w, max_h / orig_h)
+        w, h = orig_w * ratio, orig_h * ratio
+        story.append(Image(logo_path, width=w, height=h))
+        story.append(Spacer(1, 4))
+
+    # Header text
     story.append(Paragraph("<b>V. Purohit & Associates</b>", styles["Title"]))
     story.append(Paragraph("<b>Quotation</b>", styles["h2"]))
     story.append(Spacer(1, 6))
@@ -147,21 +169,13 @@ def make_pdf(client_name: str, client_type: str, df_quote: pd.DataFrame, total: 
     # --- Table ---
     headers = ["Service", "Details", "Annual Fees (Rs.)"]
     data = [headers]
-
     for _, row in df_quote.iterrows():
-        amt = row["Annual Fees (Rs.)"]
-        data.append([
-            row["Service"],
-            row["Details"],
-            f"{amt:,.0f}",  # no rupee symbol
-        ])
-
-    # Total row
+        data.append([row["Service"], row["Details"], f"{row['Annual Fees (Rs.)']:,.0f}"])
     data.append(["", "Total", f"{total:,.0f}"])
 
     table = Table(data, colWidths=[70*mm, 85*mm, 30*mm], repeatRows=1)
     table.setStyle(TableStyle([
-        # Header look
+        # Header
         ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#f0f0f0")),
         ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
         ("ALIGN", (0,0), (-1,0), "CENTER"),
@@ -169,20 +183,17 @@ def make_pdf(client_name: str, client_type: str, df_quote: pd.DataFrame, total: 
         ("BOTTOMPADDING", (0,0), (-1,0), 8),
         ("TOPPADDING", (0,0), (-1,0), 8),
         ("LINEBELOW", (0,0), (-1,0), 0.5, colors.grey),
-
-        # Body alignment and inner grid
-        ("ALIGN", (2,1), (2,-1), "RIGHT"),  # amount column
+        # Body
+        ("ALIGN", (2,1), (2,-1), "RIGHT"),
         ("INNERGRID", (0,1), (-1,-1), 0.3, colors.HexColor("#d9d9d9")),
-
-        # Total row bold + subtle background
+        # Total row
         ("FONTNAME", (0,-1), (-1,-1), "Helvetica-Bold"),
         ("BACKGROUND", (0,-1), (-1,-1), colors.HexColor("#fafafa")),
     ]))
-
     story.append(table)
     story.append(Spacer(1, 8))
 
-    # --- Notes block ---
+    # Notes block
     notes = (
         "<b>Note:</b><br/>"
         "1. The fees are exclusive of taxes and out-of-pocket expenses.<br/>"
