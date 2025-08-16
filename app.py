@@ -349,11 +349,17 @@ st.set_page_config(page_title=APP_TITLE, page_icon="📄", layout="centered")
 # Two-line header in UI
 st.title("Quotation Generator")
 st.subheader("V. Purohit & Associates")
-st.caption("Generate matrix-driven annual fees proposals and export to PDF/Excel/CSV")
 
 with st.sidebar:
-    st.markdown("**What this tool does:** Create client-specific annual fees proposals from your matrices and export to PDF/Excel/CSV.")
+    st.markdown(
+        "**What this tool does:**\n\n"
+        "1. Create annual fees quotations based on client type\n"
+        "2. Fees derived from fees master already provided\n"
+        "3. Fees amount is still editable\n"
+        "4. Export to PDF/Excel/CSV"
+    )
     st.divider()
+
 
     # Numbered options
     st.subheader("Options")
