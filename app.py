@@ -66,7 +66,6 @@ def normalize_str(x):
     return (x or "").strip().upper()
 
 def title_with_acronyms(text: str) -> str:
-    """Title-case then force known acronyms to uppercase, anywhere in the string."""
     if text is None:
         return ""
     t = " ".join(str(text).split()).title()
@@ -152,7 +151,8 @@ def build_quote(client_name, client_type, df_app, df_fees,
     return out, total
 
 def compute_totals(df_selected: pd.DataFrame, discount_pct: float, gst_pct: float):
-    subtotal = float(df_selected["Annual Fees (Rs.)"].sum()) if not df_selected.empty else 0.0
+    fees_series = pd.to_numeric(df_selected["Annual Fees (Rs.)"], errors="coerce").fillna(0.0)
+    subtotal = float(fees_series.sum())
     discount_amt = round(subtotal * (discount_pct or 0) / 100.0, 2)
     taxable = max(subtotal - discount_amt, 0.0)
     gst_amt = round(taxable * (gst_pct or 0) / 100.0, 2)
@@ -181,7 +181,6 @@ def make_pdf(client_name, client_type, quote_no, df_quote, subtotal, discount_pc
 
     logo_path = find_logo_path()
     if logo_path and not letterhead:
-        # Small logo in header (letterhead mode will use watermark instead)
         ir = ImageReader(logo_path)
         ow, oh = ir.getSize()
         max_w, max_h = 30*mm, 30*mm
@@ -205,7 +204,10 @@ def make_pdf(client_name, client_type, quote_no, df_quote, subtotal, discount_pc
     headers = ["Service","Details","Annual Fees (Rs.)"]
     data = [headers]
     for _, row in df_quote.iterrows():
-        data.append([row["Service"], row["Details"], money(row["Annual Fees (Rs.)"])])
+        # ensure numeric even if user typed a string
+        amt = pd.to_numeric(row["Annual Fees (Rs.)"], errors="coerce")
+        amt = 0.0 if pd.isna(amt) else float(amt)
+        data.append([row["Service"], row["Details"], money(amt)])
     table = Table(data, colWidths=[70*mm, 85*mm, 30*mm], repeatRows=1)
     table.setStyle(TableStyle([
         ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#f0f0f0")),
@@ -252,18 +254,14 @@ def make_pdf(client_name, client_type, quote_no, df_quote, subtotal, discount_pc
     story.append(Paragraph(notes, styles["Normal"]))
 
     # Footer, page numbers & optional watermark letterhead
-    def _decorate(canv: canvas_mod.Canvas, doc_):
-        # Letterhead watermark (behind content)
+    def _decorate(canv, doc_):
         if letterhead and logo_path:
             try:
                 canv.saveState()
-                # Try transparency (if supported)
                 if hasattr(canv, "setFillAlpha"):
                     canv.setFillAlpha(0.07)
-                # Draw large centered image
                 ir = ImageReader(logo_path)
                 ow, oh = ir.getSize()
-                # Fit in page with margins
                 w = A4[0] - 60*mm
                 r = w / ow
                 h = oh * r
@@ -272,20 +270,16 @@ def make_pdf(client_name, client_type, quote_no, df_quote, subtotal, discount_pc
                 canv.drawImage(logo_path, x, y, width=w, height=h, preserveAspectRatio=True, mask="auto")
                 canv.restoreState()
             except Exception:
-                pass  # graceful fallback
+                pass
 
-        # Footer text
         canv.saveState()
         canv.setFont("Helvetica", 8)
-        footer_y = 12 * mm
-        # Wrap footer manually into two lines
         line1 = "Office No. 5, Ground Floor, Adeshwar Arcade Commercial Premises CSL, Andheri - Kurla Road,"
         line2 = "Opp. Sangam Cinema, Andheri East, Mumbai - 400093.  Email: info@vpurohit.com, Contact: +91-8369508539"
-        canv.drawCentredString(A4[0] / 2, footer_y + 4, line1)
-        canv.drawCentredString(A4[0] / 2, footer_y - 6, line2)
-        # Page number (right)
+        canv.drawCentredString(A4[0] / 2, 12*mm + 4, line1)
+        canv.drawCentredString(A4[0] / 2, 12*mm - 6, line2)
         page = canv.getPageNumber()
-        canv.drawRightString(A4[0] - 18*mm, footer_y - 18, f"Page {page}")
+        canv.drawRightString(A4[0] - 18*mm, 12*mm - 18, f"Page {page}")
         canv.restoreState()
 
     doc.build(story, onFirstPage=_decorate, onLaterPages=_decorate)
@@ -338,7 +332,6 @@ with st.form("quote_form", clear_on_submit=False):
     client_name = st.text_input("Client Name*", st.session_state.get("client_name",""))
     client_type = st.selectbox("Client Type*", CLIENT_TYPES, index=0)
 
-    # Build choices for dynamic controls from applicability
     ct_norm = normalize_str(client_type)
     app_ct = df_app[(df_app["ClientType"] == ct_norm) & (df_app["Applicable"] == True)]
 
@@ -376,7 +369,6 @@ if submit:
     if not client_name.strip():
         st.error("Please enter Client Name.")
     else:
-        # Generate a new quote number on each new generation
         st.session_state["quote_no"] = datetime.now().strftime("QTN-%Y%m%d-%H%M%S")
         df_quote, _ = build_quote(
             client_name, client_type, df_app, df_fees,
@@ -395,20 +387,26 @@ if submit:
             st.session_state["editor_active"] = True
 
 if st.session_state["editor_active"] and not st.session_state["quote_df"].empty:
-    st.success("Quotation ready. Uncheck rows to exclude them; totals update live.")
+    st.success("Quotation ready. You can edit fees and uncheck rows; totals update live.")
     edited = st.data_editor(
         st.session_state["quote_df"],
         use_container_width=True,
-        disabled=["Service","Details","Annual Fees (Rs.)"],
+        disabled=["Service","Details"],  # Fee is EDITABLE now
         column_config={
-            "Include": st.column_config.CheckboxColumn(help="Uncheck to remove this row from the quotation/PDF.")
+            "Include": st.column_config.CheckboxColumn(help="Uncheck to remove this row from the quotation/PDF."),
+            "Annual Fees (Rs.)": st.column_config.NumberColumn(
+                "Annual Fees (Rs.)", min_value=0, step=100, help="Edit the fee; all totals & PDF will use this value.", format="%.0f"
+            ),
         },
         num_rows="fixed",
         key="quote_editor",
     )
     st.session_state["quote_df"] = edited
 
+    # Keep only included rows and ensure numbers are numeric
     filtered = edited[edited["Include"] == True].drop(columns=["Include"])
+    filtered["Annual Fees (Rs.)"] = pd.to_numeric(filtered["Annual Fees (Rs.)"], errors="coerce").fillna(0.0)
+
     subtotal, discount_amt, taxable, gst_amt, grand = compute_totals(
         filtered, st.session_state["discount_pct"], st.session_state["gst_pct"]
     )
