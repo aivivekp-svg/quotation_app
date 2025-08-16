@@ -1,4 +1,5 @@
 import io
+import re
 from datetime import datetime
 
 import pandas as pd
@@ -34,6 +35,14 @@ ACCOUNTING_PLANS = [
 EVENT_SERVICE = "EVENT BASED FILING"
 PT_SERVICE = "PROFESSION TAX RETURNS"
 
+FIRM_FOOTER = (
+    "Office No. 5, Ground Floor, Adeshwar Arcade Commercial Premises CSL, "
+    "Andheri - Kurla Road, Opp. Sangam Cinema, Andheri East, Mumbai - 400093.  "
+    "Email: info@vpurohit.com, Contact: +91-8369508539"
+)
+
+ACRONYMS = ["GSTR", "PTEC", "PTRC", "ADT", "ROC", "TDS", "AOC", "MGT", "26QB", "26QC"]
+
 # ---------- Session defaults ----------
 if "editor_active" not in st.session_state:
     st.session_state["editor_active"] = False
@@ -43,10 +52,30 @@ if "client_name" not in st.session_state:
     st.session_state["client_name"] = ""
 if "client_type" not in st.session_state:
     st.session_state["client_type"] = ""
+if "quote_no" not in st.session_state:
+    st.session_state["quote_no"] = ""
+if "gst_pct" not in st.session_state:
+    st.session_state["gst_pct"] = 18
+if "discount_pct" not in st.session_state:
+    st.session_state["discount_pct"] = 0
+if "letterhead" not in st.session_state:
+    st.session_state["letterhead"] = False
 
 # ---------- Helpers ----------
 def normalize_str(x):
     return (x or "").strip().upper()
+
+def title_with_acronyms(text: str) -> str:
+    """Title-case then force known acronyms to uppercase, anywhere in the string."""
+    if text is None:
+        return ""
+    t = " ".join(str(text).split()).title()
+    for token in ACRONYMS:
+        t = re.sub(rf"\b{re.escape(token)}\b", token, t, flags=re.IGNORECASE)
+    return t
+
+def money(n: float) -> str:
+    return f"{n:,.0f}"
 
 def load_matrices(uploaded_file):
     if uploaded_file is not None:
@@ -110,8 +139,10 @@ def build_quote(client_name, client_type, df_app, df_fees,
         df_fees, on=["Service","SubService","ClientType"], how="left", validate="1:1"
     )
     quoted["FeeINR"] = pd.to_numeric(quoted["FeeINR"], errors="coerce").fillna(0.0)
-    quoted["Service"] = quoted["Service"].str.title()
-    quoted["SubService"] = quoted["SubService"].str.title()
+
+    # Presentable labels with acronyms
+    quoted["Service"] = quoted["Service"].map(title_with_acronyms)
+    quoted["SubService"] = quoted["SubService"].map(title_with_acronyms)
     quoted.sort_values(["Service","SubService"], inplace=True)
 
     out = (quoted.drop(columns=["ClientType"], errors="ignore")
@@ -120,19 +151,28 @@ def build_quote(client_name, client_type, df_app, df_fees,
     total = float(out["Annual Fees (Rs.)"].sum()) if not out.empty else 0.0
     return out, total
 
-def make_pdf(client_name, client_type, df_quote, total):
+def compute_totals(df_selected: pd.DataFrame, discount_pct: float, gst_pct: float):
+    subtotal = float(df_selected["Annual Fees (Rs.)"].sum()) if not df_selected.empty else 0.0
+    discount_amt = round(subtotal * (discount_pct or 0) / 100.0, 2)
+    taxable = max(subtotal - discount_amt, 0.0)
+    gst_amt = round(taxable * (gst_pct or 0) / 100.0, 2)
+    grand = round(taxable + gst_amt, 2)
+    return subtotal, discount_amt, taxable, gst_amt, grand
+
+def make_pdf(client_name, client_type, quote_no, df_quote, subtotal, discount_pct, discount_amt, gst_pct, gst_amt, grand, letterhead=False):
     import os
     from reportlab.platypus import Image
     from reportlab.lib.utils import ImageReader
+    from reportlab.pdfgen import canvas as canvas_mod
 
     buf = io.BytesIO()
     doc = SimpleDocTemplate(
-        buf, pagesize=A4, leftMargin=18*mm, rightMargin=18*mm, topMargin=15*mm, bottomMargin=15*mm
+        buf, pagesize=A4, leftMargin=18*mm, rightMargin=18*mm, topMargin=18*mm, bottomMargin=18*mm
     )
     styles = getSampleStyleSheet()
     story = []
 
-    # Optional logo
+    # Header block (logo small)
     def find_logo_path():
         for name in ("logo.png","logo.jpg","logo.jpeg"):
             if os.path.exists(name):
@@ -140,19 +180,20 @@ def make_pdf(client_name, client_type, df_quote, total):
         return None
 
     logo_path = find_logo_path()
-    if logo_path:
-        max_w, max_h = 30*mm, 30*mm
+    if logo_path and not letterhead:
+        # Small logo in header (letterhead mode will use watermark instead)
         ir = ImageReader(logo_path)
         ow, oh = ir.getSize()
+        max_w, max_h = 30*mm, 30*mm
         r = min(max_w/ow, max_h/oh)
         story.append(Image(logo_path, width=ow*r, height=oh*r))
         story.append(Spacer(1, 4))
 
-    # Header
     story.append(Paragraph("<b>V. Purohit & Associates</b>", styles["Title"]))
     story.append(Paragraph("<b>Quotation</b>", styles["h2"]))
     story.append(Spacer(1, 6))
     meta_html = (
+        f"<b>Quotation No.:</b> {quote_no}<br/>"
         f"<b>Client Name:</b> {client_name}<br/>"
         f"<b>Client Type:</b> {client_type}<br/>"
         f"<b>Date:</b> {datetime.now().strftime('%d-%b-%Y')}"
@@ -164,9 +205,7 @@ def make_pdf(client_name, client_type, df_quote, total):
     headers = ["Service","Details","Annual Fees (Rs.)"]
     data = [headers]
     for _, row in df_quote.iterrows():
-        data.append([row["Service"], row["Details"], f"{row['Annual Fees (Rs.)']:,.0f}"])
-    data.append(["", "Total", f"{total:,.0f}"])
-
+        data.append([row["Service"], row["Details"], money(row["Annual Fees (Rs.)"])])
     table = Table(data, colWidths=[70*mm, 85*mm, 30*mm], repeatRows=1)
     table.setStyle(TableStyle([
         ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#f0f0f0")),
@@ -178,22 +217,78 @@ def make_pdf(client_name, client_type, df_quote, total):
         ("LINEBELOW", (0,0), (-1,0), 0.5, colors.grey),
         ("ALIGN", (2,1), (2,-1), "RIGHT"),
         ("INNERGRID", (0,1), (-1,-1), 0.3, colors.HexColor("#d9d9d9")),
-        ("FONTNAME", (0,-1), (-1,-1), "Helvetica-Bold"),
-        ("BACKGROUND", (0,-1), (-1,-1), colors.HexColor("#fafafa")),
     ]))
     story.append(table)
     story.append(Spacer(1, 8))
 
+    # Totals block
+    tot_lines = [
+        ["", "Subtotal", money(subtotal)],
+        ["", f"Discount ({discount_pct:.0f}%)", f"- {money(discount_amt)}"] if discount_amt > 0 else ["", "Discount (0%)", money(0)],
+        ["", "Taxable Amount", money(subtotal - discount_amt)],
+        ["", f"GST ({gst_pct:.0f}%)", money(gst_amt)],
+        ["", "Grand Total", money(grand)],
+    ]
+    t2 = Table([["","", ""], *tot_lines], colWidths=[70*mm, 85*mm, 30*mm])
+    t2.setStyle(TableStyle([
+        ("ALIGN", (2,0), (2,-1), "RIGHT"),
+        ("FONTNAME", (0,-1), (-1,-1), "Helvetica-Bold"),
+        ("BACKGROUND", (0,-1), (-1,-1), colors.HexColor("#fafafa")),
+        ("LINEABOVE", (0,1), (-1,1), 0.5, colors.grey),
+        ("BOTTOMPADDING", (0,1), (-1,-1), 6),
+        ("TOPPADDING", (0,1), (-1,-1), 4),
+    ]))
+    story.append(t2)
+    story.append(Spacer(1, 8))
+
+    # Notes
     notes = (
         "<b>Note:</b><br/>"
         "1. The fees are exclusive of taxes and out-of-pocket expenses.<br/>"
-        "2. GST 18% extra.<br/>"
+        "2. GST as above.<br/>"
         "3. Our scope is limited to the services listed above.<br/>"
         "4. The above quotation is valid for a period of 30 days."
     )
     story.append(Paragraph(notes, styles["Normal"]))
 
-    doc.build(story)
+    # Footer, page numbers & optional watermark letterhead
+    def _decorate(canv: canvas_mod.Canvas, doc_):
+        # Letterhead watermark (behind content)
+        if letterhead and logo_path:
+            try:
+                canv.saveState()
+                # Try transparency (if supported)
+                if hasattr(canv, "setFillAlpha"):
+                    canv.setFillAlpha(0.07)
+                # Draw large centered image
+                ir = ImageReader(logo_path)
+                ow, oh = ir.getSize()
+                # Fit in page with margins
+                w = A4[0] - 60*mm
+                r = w / ow
+                h = oh * r
+                x = 30*mm
+                y = (A4[1] - h)/2
+                canv.drawImage(logo_path, x, y, width=w, height=h, preserveAspectRatio=True, mask="auto")
+                canv.restoreState()
+            except Exception:
+                pass  # graceful fallback
+
+        # Footer text
+        canv.saveState()
+        canv.setFont("Helvetica", 8)
+        footer_y = 12 * mm
+        # Wrap footer manually into two lines
+        line1 = "Office No. 5, Ground Floor, Adeshwar Arcade Commercial Premises CSL, Andheri - Kurla Road,"
+        line2 = "Opp. Sangam Cinema, Andheri East, Mumbai - 400093.  Email: info@vpurohit.com, Contact: +91-8369508539"
+        canv.drawCentredString(A4[0] / 2, footer_y + 4, line1)
+        canv.drawCentredString(A4[0] / 2, footer_y - 6, line2)
+        # Page number (right)
+        page = canv.getPageNumber()
+        canv.drawRightString(A4[0] - 18*mm, footer_y - 18, f"Page {page}")
+        canv.restoreState()
+
+    doc.build(story, onFirstPage=_decorate, onLaterPages=_decorate)
     return buf.getvalue()
 
 def build_status(df_app, df_fees):
@@ -223,6 +318,12 @@ with st.sidebar:
         st.write(f"Source: **{source}**")
         st.write(f"Applicability rows: **{len(df_app):,}**")
         st.write(f"Fees rows: **{len(df_fees):,}**")
+
+        st.subheader("Options")
+        st.session_state["discount_pct"] = st.number_input("Discount %", min_value=0, max_value=100, value=int(st.session_state["discount_pct"]), step=1)
+        st.session_state["gst_pct"] = st.number_input("GST %", min_value=0, max_value=100, value=int(st.session_state["gst_pct"]), step=1)
+        st.session_state["letterhead"] = st.checkbox("Letterhead mode (watermark logo)", value=st.session_state["letterhead"])
+
         with st.expander("Data status", expanded=False):
             service_defs = len(df_app[["Service","SubService"]].drop_duplicates())
             st.write(f"Service definitions: **{service_defs}**")
@@ -249,18 +350,18 @@ with st.form("quote_form", clear_on_submit=False):
     )
 
     event_options = app_ct.loc[app_ct["Service"] == normalize_str(EVENT_SERVICE), "SubService"].dropna().unique().tolist()
-    event_options_tc = sorted([s.title() for s in event_options if s])
+    event_options_tc = sorted([title_with_acronyms(s) for s in event_options if s])
     selected_event_tc = st.multiselect(
-        f"{EVENT_SERVICE.title()} – select sub-services (choose any)",
+        f"{title_with_acronyms(EVENT_SERVICE)} – select sub-services (choose any)",
         event_options_tc,
         default=[],
         help="Only selected items will be included in the quotation.",
     )
 
     pt_options = app_ct.loc[app_ct["Service"] == normalize_str(PT_SERVICE), "SubService"].dropna().unique().tolist()
-    pt_options_tc = sorted([s.title() for s in pt_options if s])
+    pt_options_tc = sorted([title_with_acronyms(s) for s in pt_options if s])
     selected_pt_tc = st.radio(
-        f"{PT_SERVICE.title()} – choose one",
+        f"{title_with_acronyms(PT_SERVICE)} – choose one",
         pt_options_tc if pt_options_tc else ["(Not applicable)"],
         index=0,
         horizontal=True,
@@ -268,13 +369,15 @@ with st.form("quote_form", clear_on_submit=False):
     if selected_pt_tc == "(Not applicable)":
         selected_pt_tc = None
 
-    generate = st.form_submit_button("Generate Table")
+    submit = st.form_submit_button("Generate Table")
 
 # ----- Persisted editor: stays visible during edits -----
-if generate:
+if submit:
     if not client_name.strip():
         st.error("Please enter Client Name.")
     else:
+        # Generate a new quote number on each new generation
+        st.session_state["quote_no"] = datetime.now().strftime("QTN-%Y%m%d-%H%M%S")
         df_quote, _ = build_quote(
             client_name, client_type, df_app, df_fees,
             selected_accounting=selected_accounting,
@@ -291,9 +394,8 @@ if generate:
             st.session_state["client_type"] = client_type
             st.session_state["editor_active"] = True
 
-# Show editor whenever active (even after reruns from checkbox edits)
 if st.session_state["editor_active"] and not st.session_state["quote_df"].empty:
-    st.success("Quotation ready. Uncheck rows to exclude them; total updates live.")
+    st.success("Quotation ready. Uncheck rows to exclude them; totals update live.")
     edited = st.data_editor(
         st.session_state["quote_df"],
         use_container_width=True,
@@ -304,20 +406,22 @@ if st.session_state["editor_active"] and not st.session_state["quote_df"].empty:
         num_rows="fixed",
         key="quote_editor",
     )
-    # persist the edited DF
     st.session_state["quote_df"] = edited
 
     filtered = edited[edited["Include"] == True].drop(columns=["Include"])
-    total_now = float(filtered["Annual Fees (Rs.)"].sum()) if not filtered.empty else 0.0
+    subtotal, discount_amt, taxable, gst_amt, grand = compute_totals(
+        filtered, st.session_state["discount_pct"], st.session_state["gst_pct"]
+    )
 
-    col1, col2, col3 = st.columns([1,1,1])
-    with col1:
-        st.write(f"**Grand Total (Rs.):** {total_now:,.0f}")
-    with col2:
-        if st.button("Reset (include all rows)"):
-            st.session_state["quote_df"]["Include"] = True
-            st.rerun()
-    with col3:
+    c1, c2, c3 = st.columns([1,1,1])
+    with c1:
+        st.write(f"**Subtotal (Rs.):** {money(subtotal)}")
+        st.write(f"**Discount ({st.session_state['discount_pct']}%) (Rs.):** {money(discount_amt)}")
+    with c2:
+        st.write(f"**Taxable Amount (Rs.):** {money(taxable)}")
+        st.write(f"**GST ({st.session_state['gst_pct']}%) (Rs.):** {money(gst_amt)}")
+    with c3:
+        st.write(f"**Grand Total (Rs.):** {money(grand)}")
         if st.button("Start Over"):
             st.session_state["editor_active"] = False
             st.session_state["quote_df"] = pd.DataFrame()
@@ -326,7 +430,19 @@ if st.session_state["editor_active"] and not st.session_state["quote_df"].empty:
     if filtered.empty:
         st.info("All rows are excluded. Select at least one row to enable PDF.")
     else:
-        pdf_bytes = make_pdf(st.session_state["client_name"], st.session_state["client_type"], filtered, total_now)
+        pdf_bytes = make_pdf(
+            st.session_state["client_name"],
+            st.session_state["client_type"],
+            st.session_state["quote_no"],
+            filtered,
+            subtotal,
+            float(st.session_state["discount_pct"]),
+            discount_amt,
+            float(st.session_state["gst_pct"]),
+            gst_amt,
+            grand,
+            letterhead=st.session_state["letterhead"],
+        )
         st.download_button(
             "⬇️ Download PDF",
             data=pdf_bytes,
