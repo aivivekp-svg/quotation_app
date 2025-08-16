@@ -41,7 +41,8 @@ FIRM_FOOTER = (
     "Email: info@vpurohit.com, Contact: +91-8369508539"
 )
 
-ACRONYMS = ["GSTR", "PTEC", "PTRC", "ADT", "ROC", "TDS", "AOC", "MGT", "26QB", "26QC"]
+# NOTE: Added "GST" so 'Gst' becomes 'GST'
+ACRONYMS = ["GST", "GSTR", "PTEC", "PTRC", "ADT", "ROC", "TDS", "AOC", "MGT", "26QB", "26QC"]
 
 # ---------- Session defaults ----------
 if "editor_active" not in st.session_state:
@@ -66,12 +67,25 @@ def normalize_str(x):
     return (x or "").strip().upper()
 
 def title_with_acronyms(text: str) -> str:
+    """Title-case, fix 'of' to lower-case, and force known acronyms to uppercase."""
     if text is None:
         return ""
     t = " ".join(str(text).split()).title()
+    # Lower-case 'of' wherever found
+    t = re.sub(r"\bOf\b", "of", t, flags=re.IGNORECASE)
+    # Force acronyms
     for token in ACRONYMS:
         t = re.sub(rf"\b{re.escape(token)}\b", token, t, flags=re.IGNORECASE)
     return t
+
+def service_display_override(raw_upper: str, pretty: str) -> str:
+    """
+    Special service display renames.
+    - 'FILING OF GSTR RETURNS' --> 'Filing of GST Returns' (service only)
+    """
+    if raw_upper == "FILING OF GSTR RETURNS":
+        return "Filing of GST Returns"
+    return pretty
 
 def money(n: float) -> str:
     return f"{n:,.0f}"
@@ -139,9 +153,16 @@ def build_quote(client_name, client_type, df_app, df_fees,
     )
     quoted["FeeINR"] = pd.to_numeric(quoted["FeeINR"], errors="coerce").fillna(0.0)
 
-    # Presentable labels with acronyms
-    quoted["Service"] = quoted["Service"].map(title_with_acronyms)
+    # Presentable labels with acronyms + special overrides
+    service_key = quoted["Service"].copy()         # UPPER raw service
+    svc_pretty = service_key.map(title_with_acronyms)
+    svc_final = [
+        service_display_override(raw, pretty)
+        for raw, pretty in zip(service_key.tolist(), svc_pretty.tolist())
+    ]
+    quoted["Service"] = svc_final
     quoted["SubService"] = quoted["SubService"].map(title_with_acronyms)
+
     quoted.sort_values(["Service","SubService"], inplace=True)
 
     out = (quoted.drop(columns=["ClientType"], errors="ignore")
@@ -159,6 +180,33 @@ def compute_totals(df_selected: pd.DataFrame, discount_pct: float, gst_pct: floa
     grand = round(taxable + gst_amt, 2)
     return subtotal, discount_amt, taxable, gst_amt, grand
 
+def build_grouped_table_rows(df: pd.DataFrame):
+    """
+    Build grouped rows for PDF table:
+    - A service header row (spanning first 2 columns) per service
+    - Followed by its sub-service rows: ["", Details, Amount]
+    Returns: rows, span_instructions, extra_styles
+    """
+    rows = [["Service", "Details", "Annual Fees (Rs.)"]]
+    spans = []
+    styles = []
+    r = 1  # next row idx in table
+    for svc, grp in df.groupby("Service", sort=True):
+        # Section header
+        rows.append([svc, "", ""])
+        spans.append(("SPAN", (0, r), (1, r)))
+        styles.append(("BACKGROUND", (0, r), (-1, r), colors.HexColor("#f7f7f7")))
+        styles.append(("FONTNAME", (0, r), (-1, r), "Helvetica-Bold"))
+        styles.append(("ALIGN", (0, r), (-1, r), "LEFT"))
+        r += 1
+        # Sub-rows
+        for _, row in grp.iterrows():
+            amt = pd.to_numeric(row["Annual Fees (Rs.)"], errors="coerce")
+            amt = 0.0 if pd.isna(amt) else float(amt)
+            rows.append(["", row["Details"], money(amt)])
+            r += 1
+    return rows, spans, styles
+
 def make_pdf(client_name, client_type, quote_no, df_quote, subtotal, discount_pct, discount_amt, gst_pct, gst_amt, grand, letterhead=False):
     import os
     from reportlab.platypus import Image
@@ -172,7 +220,7 @@ def make_pdf(client_name, client_type, quote_no, df_quote, subtotal, discount_pc
     styles = getSampleStyleSheet()
     story = []
 
-    # Header block (logo small)
+    # Header block (logo small unless watermark mode)
     def find_logo_path():
         for name in ("logo.png","logo.jpg","logo.jpeg"):
             if os.path.exists(name):
@@ -200,16 +248,11 @@ def make_pdf(client_name, client_type, quote_no, df_quote, subtotal, discount_pc
     story.append(Paragraph(meta_html, styles["Normal"]))
     story.append(Spacer(1, 10))
 
-    # Table
-    headers = ["Service","Details","Annual Fees (Rs.)"]
-    data = [headers]
-    for _, row in df_quote.iterrows():
-        # ensure numeric even if user typed a string
-        amt = pd.to_numeric(row["Annual Fees (Rs.)"], errors="coerce")
-        amt = 0.0 if pd.isna(amt) else float(amt)
-        data.append([row["Service"], row["Details"], money(amt)])
-    table = Table(data, colWidths=[70*mm, 85*mm, 30*mm], repeatRows=1)
-    table.setStyle(TableStyle([
+    # Grouped table
+    table_rows, spans, extra_styles = build_grouped_table_rows(df_quote)
+    table = Table(table_rows, colWidths=[70*mm, 85*mm, 30*mm], repeatRows=1)
+    base_style = [
+        # Header
         ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#f0f0f0")),
         ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
         ("ALIGN", (0,0), (-1,0), "CENTER"),
@@ -217,9 +260,11 @@ def make_pdf(client_name, client_type, quote_no, df_quote, subtotal, discount_pc
         ("BOTTOMPADDING", (0,0), (-1,0), 8),
         ("TOPPADDING", (0,0), (-1,0), 8),
         ("LINEBELOW", (0,0), (-1,0), 0.5, colors.grey),
+        # Body
         ("ALIGN", (2,1), (2,-1), "RIGHT"),
         ("INNERGRID", (0,1), (-1,-1), 0.3, colors.HexColor("#d9d9d9")),
-    ]))
+    ]
+    table.setStyle(TableStyle(base_style + spans + extra_styles))
     story.append(table)
     story.append(Spacer(1, 8))
 
@@ -319,17 +364,13 @@ with st.sidebar:
         st.session_state["letterhead"] = st.checkbox("Letterhead mode (watermark logo)", value=st.session_state["letterhead"])
 
         with st.expander("Data status", expanded=False):
-            service_defs = len(df_app[["Service", "SubService"]].drop_duplicates())
+            service_defs = len(df_app[["Service","SubService"]].drop_duplicates())
             st.write(f"Service definitions: **{service_defs}**")
             status_df = build_status(df_app, df_fees)
             all_ok = (status_df["Missing/Zero fees"] == 0).all()
-
             if all_ok:
                 st.success("All applicable services have fees.")
-                st.dataframe(
-                    status_df.drop(columns=["Missing/Zero fees"]),
-                    use_container_width=True
-                )
+                st.dataframe(status_df.drop(columns=["Missing/Zero fees"]), use_container_width=True)
             else:
                 st.warning("Some fees are missing/zero. Review below.")
                 st.dataframe(status_df, use_container_width=True)
@@ -401,11 +442,11 @@ if st.session_state["editor_active"] and not st.session_state["quote_df"].empty:
     edited = st.data_editor(
         st.session_state["quote_df"],
         use_container_width=True,
-        disabled=["Service","Details"],  # Fee is EDITABLE now
+        disabled=["Service","Details"],  # Fee is editable
         column_config={
             "Include": st.column_config.CheckboxColumn(help="Uncheck to remove this row from the quotation/PDF."),
             "Annual Fees (Rs.)": st.column_config.NumberColumn(
-                "Annual Fees (Rs.)", min_value=0, step=100, help="Edit the fee; all totals & PDF will use this value.", format="%.0f"
+                "Annual Fees (Rs.)", min_value=0, step=100, help="Edit the fee; totals & PDF will use this value.", format="%.0f"
             ),
         },
         num_rows="fixed",
@@ -413,7 +454,6 @@ if st.session_state["editor_active"] and not st.session_state["quote_df"].empty:
     )
     st.session_state["quote_df"] = edited
 
-    # Keep only included rows and ensure numbers are numeric
     filtered = edited[edited["Include"] == True].drop(columns=["Include"])
     filtered["Annual Fees (Rs.)"] = pd.to_numeric(filtered["Annual Fees (Rs.)"], errors="coerce").fillna(0.0)
 
