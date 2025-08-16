@@ -28,7 +28,7 @@ FIRM_FOOTER = (
     "Email: info@vpurohit.com, Contact: +91-8369508539"
 )
 
-# Acronyms – ensures GST/GSTR/etc. stay uppercase; 'of' is lower-cased in titles
+# Acronyms – keep these uppercase in text; also enforce 'of' -> 'of'
 ACRONYMS = ["GST", "GSTR", "PTEC", "PTRC", "ADT", "ROC", "TDS", "AOC", "MGT", "26QB", "26QC"]
 
 # ---------- Session defaults ----------
@@ -40,16 +40,20 @@ if "quote_no" not in st.session_state: st.session_state["quote_no"] = ""
 if "gst_pct" not in st.session_state: st.session_state["gst_pct"] = 18
 if "discount_pct" not in st.session_state: st.session_state["discount_pct"] = 0
 if "letterhead" not in st.session_state: st.session_state["letterhead"] = False
+if "client_addr" not in st.session_state: st.session_state["client_addr"] = ""
+if "client_email" not in st.session_state: st.session_state["client_email"] = ""
+if "client_phone" not in st.session_state: st.session_state["client_phone"] = ""
+if "sig_bytes" not in st.session_state: st.session_state["sig_bytes"] = None  # signature image bytes
 
 # ---------- Helpers ----------
-def normalize_str(x): 
+def normalize_str(x):
     return (x or "").strip().upper()
 
 def title_with_acronyms(text: str) -> str:
     """Title-case, fix 'of' to lower-case, and force known acronyms to uppercase."""
     if text is None: return ""
     t = " ".join(str(text).split()).title()
-    t = re.sub(r"\bOf\b", "of", t, flags=re.IGNORECASE)  # 'of' → lower
+    t = re.sub(r"\bOf\b", "of", t, flags=re.IGNORECASE)
     for token in ACRONYMS:
         t = re.sub(rf"\b{re.escape(token)}\b", token, t, flags=re.IGNORECASE)
     return t
@@ -60,7 +64,7 @@ def service_display_override(raw_upper: str, pretty: str) -> str:
         return "Filing of GST Returns"
     return pretty
 
-def money(n: float) -> str: 
+def money(n: float) -> str:
     return f"{n:,.0f}"
 
 def load_matrices(uploaded_file):
@@ -126,7 +130,7 @@ def build_quote(client_name, client_type, df_app, df_fees,
     )
     quoted["FeeINR"] = pd.to_numeric(quoted["FeeINR"], errors="coerce").fillna(0.0)
 
-    # Labels: acronyms + overrides (e.g., GST, Filing of GST Returns)
+    # Labels with acronyms + overrides
     service_key_upper = quoted["Service"].copy()
     svc_pretty = service_key_upper.map(title_with_acronyms)
     quoted["Service"] = [
@@ -152,33 +156,25 @@ def compute_totals(df_selected: pd.DataFrame, discount_pct: float, gst_pct: floa
     grand = round(taxable + gst_amt, 2)
     return subtotal, discount_amt, taxable, gst_amt, grand
 
-# --- PDF table rows: grouped with a single service-name row (no merged cells, no centering) ---
+# --- PDF table rows: grouped with a single service-name row (no merges) ---
 def build_grouped_pdf_rows(df: pd.DataFrame):
-    """
-    Returns a list of rows for the PDF:
-      - Header row
-      - For each service:
-          [ServiceName, "", ""]   # service header (bold bg)
-          ["", Details, Amount]   # one per sub-service
-    """
     rows = [["Service", "Details", "Annual Fees (Rs.)"]]
     styles = []
     r = 1
     for svc, grp in df.groupby("Service", sort=True):
-        # service header row (no spans)
         rows.append([svc, "", ""])
         styles.append(("BACKGROUND", (0, r), (-1, r), colors.HexColor("#f7f7f7")))
         styles.append(("FONTNAME", (0, r), (-1, r), "Helvetica-Bold"))
         styles.append(("ALIGN", (0, r), (-1, r), "LEFT"))
         r += 1
-        # sub-service rows
         for _, row in grp.iterrows():
             amt = pd.to_numeric(row["Annual Fees (Rs.)"], errors="coerce"); amt = 0.0 if pd.isna(amt) else float(amt)
             rows.append(["", row["Details"], money(amt)])
             r += 1
     return rows, styles
 
-def make_pdf(client_name, client_type, quote_no, df_quote, subtotal, discount_pct, discount_amt, gst_pct, gst_amt, grand, letterhead=False):
+def make_pdf(client_name, client_type, quote_no, df_quote, subtotal, discount_pct, discount_amt, gst_pct, gst_amt, grand,
+             letterhead=False, addr=None, email=None, phone=None, signature_bytes: bytes | None = None):
     import os
     from reportlab.platypus import Image
     from reportlab.lib.utils import ImageReader
@@ -191,45 +187,67 @@ def make_pdf(client_name, client_type, quote_no, df_quote, subtotal, discount_pc
     styles = getSampleStyleSheet()
     story = []
 
-    # small logo in header (letterhead uses watermark instead)
+    # Logo (small in header unless watermark mode)
     def find_logo_path():
         for name in ("logo.png","logo.jpg","logo.jpeg"):
             if os.path.exists(name): return name
         return None
+
     logo_path = find_logo_path()
     if logo_path and not letterhead:
         ir = ImageReader(logo_path)
         ow, oh = ir.getSize(); max_w, max_h = 30*mm, 30*mm
-        r = min(max_w/ow, max_h/oh); story.append(Image(logo_path, width=ow*r, height=oh*r)); story.append(Spacer(1, 4))
+        r = min(max_w/ow, max_h/oh)
+        story.append(Image(logo_path, width=ow*r, height=oh*r))
+        story.append(Spacer(1, 4))
 
+    # Header
     story.append(Paragraph("<b>V. Purohit & Associates</b>", styles["Title"]))
-    story.append(Paragraph("<b>Quotation</b>", styles["h2"])); story.append(Spacer(1, 6))
-    meta_html = (
-        f"<b>Quotation No.:</b> {quote_no}<br/>"
-        f"<b>Client Name:</b> {client_name}<br/>"
-        f"<b>Client Type:</b> {client_type}<br/>"
-        f"<b>Date:</b> {datetime.now().strftime('%d-%b-%Y')}"
-    )
-    story.append(Paragraph(meta_html, styles["Normal"])); story.append(Spacer(1, 10))
+    story.append(Paragraph("<b>Quotation</b>", styles["h2"]))
+    story.append(Spacer(1, 6))
 
-    # grouped table (service header row then sub-rows)
+    meta_lines = [
+        f"<b>Quotation No.:</b> {quote_no}",
+        f"<b>Client Name:</b> {client_name}",
+        f"<b>Client Type:</b> {client_type}",
+        f"<b>Date:</b> {datetime.now().strftime('%d-%b-%Y')}",
+    ]
+    if addr and addr.strip():
+        # preserve newlines using <br/>
+        addr_html = "<br/>".join([ln.strip() for ln in addr.splitlines() if ln.strip()])
+        meta_lines.append(f"<b>Address:</b> {addr_html}")
+    if email and email.strip():
+        meta_lines.append(f"<b>Email:</b> {email.strip()}")
+    if phone and phone.strip():
+        meta_lines.append(f"<b>Phone:</b> {phone.strip()}")
+
+    story.append(Paragraph("<br/>".join(meta_lines), styles["Normal"]))
+    story.append(Spacer(1, 10))
+
+    # Grouped table (narrower columns; total width 170mm)
     table_rows, extra_styles = build_grouped_pdf_rows(df_quote)
-    table = Table(table_rows, colWidths=[70*mm, 85*mm, 30*mm], repeatRows=1)
+    col_widths = [60*mm, 80*mm, 30*mm]  # Service | Details | Amount (narrower 'Details')
+    table = Table(table_rows, colWidths=col_widths, repeatRows=1)
     base_style = [
+        # Header row styling + border box
         ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#f0f0f0")),
         ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
         ("ALIGN", (0,0), (-1,0), "CENTER"),
         ("VALIGN", (0,0), (-1,0), "MIDDLE"),
         ("BOTTOMPADDING", (0,0), (-1,0), 8),
         ("TOPPADDING", (0,0), (-1,0), 8),
-        ("LINEBELOW", (0,0), (-1,0), 0.5, colors.grey),
+        ("BOX", (0,0), (-1,0), 0.8, colors.grey),  # border around the 3 headings
+        # Body grid + right align amount
         ("ALIGN", (2,1), (2,-1), "RIGHT"),
         ("INNERGRID", (0,1), (-1,-1), 0.3, colors.HexColor("#d9d9d9")),
+        # OUTER border around entire table
+        ("BOX", (0,0), (-1,-1), 1.0, colors.black),
     ]
     table.setStyle(TableStyle(base_style + extra_styles))
-    story.append(table); story.append(Spacer(1, 8))
+    story.append(table)
+    story.append(Spacer(1, 8))
 
-    # totals block
+    # Totals block
     tot_lines = [
         ["", "Subtotal", money(subtotal)],
         ["", f"Discount ({discount_pct:.0f}%)", f"- {money(discount_amt)}"] if discount_amt > 0 else ["", "Discount (0%)", money(0)],
@@ -237,7 +255,7 @@ def make_pdf(client_name, client_type, quote_no, df_quote, subtotal, discount_pc
         ["", f"GST ({gst_pct:.0f}%)", money(gst_amt)],
         ["", "Grand Total", money(grand)],
     ]
-    t2 = Table([["","", ""], *tot_lines], colWidths=[70*mm, 85*mm, 30*mm])
+    t2 = Table([["","", ""], *tot_lines], colWidths=col_widths)
     t2.setStyle(TableStyle([
         ("ALIGN", (2,0), (2,-1), "RIGHT"),
         ("FONTNAME", (0,-1), (-1,-1), "Helvetica-Bold"),
@@ -245,40 +263,72 @@ def make_pdf(client_name, client_type, quote_no, df_quote, subtotal, discount_pc
         ("LINEABOVE", (0,1), (-1,1), 0.5, colors.grey),
         ("BOTTOMPADDING", (0,1), (-1,-1), 6),
         ("TOPPADDING", (0,1), (-1,-1), 4),
+        ("BOX", (0,0), (-1,-1), 1.0, colors.black),  # outside border for totals table too
     ]))
-    story.append(t2); story.append(Spacer(1, 8))
+    story.append(t2)
+    story.append(Spacer(1, 12))
 
-    # notes
-    notes = (
-        "<b>Note:</b><br/>"
-        "1. The fees are exclusive of taxes and out-of-pocket expenses.<br/>"
-        "2. GST as above.<br/>"
-        "3. Our scope is limited to the services listed above.<br/>"
-        "4. The above quotation is valid for a period of 30 days."
-    )
-    story.append(Paragraph(notes, styles["Normal"]))
-
-    # footer / watermark / page numbers
-    def _decorate(canv, doc_):
-        # watermark letterhead
-        if st.session_state.get("letterhead", False) and logo_path:
+    # Signature / stamp block (right aligned)
+    if signature_bytes is not None:
+        try:
+            from reportlab.platypus import Image
+            sig_img = Image(io.BytesIO(signature_bytes), width=45*mm, height=20*mm)
+            story.append(Paragraph("<b>For V. Purohit & Associates</b>", styles["Normal"]))
+            story.append(Spacer(1, 6))
+            story.append(sig_img)
+            story.append(Paragraph("Authorised Signatory", styles["Normal"]))
+            story.append(Spacer(1, 8))
+        except Exception:
+            pass
+    else:
+        # Try local files if uploaded not provided
+        for alt in ("signature.png", "signature.jpg", "stamp.png", "stamp.jpg"):
             try:
+                import os
+                if os.path.exists(alt):
+                    from reportlab.platypus import Image
+                    story.append(Paragraph("<b>For V. Purohit & Associates</b>", styles["Normal"]))
+                    story.append(Spacer(1, 6))
+                    story.append(Image(alt, width=45*mm, height=20*mm))
+                    story.append(Paragraph("Authorised Signatory", styles["Normal"]))
+                    story.append(Spacer(1, 8))
+                    break
+            except Exception:
+                continue
+
+    # Footer, page numbers & optional watermark letterhead
+    def _decorate(canv, doc_):
+        # Watermark letterhead
+        if letterhead:
+            try:
+                import os
                 from reportlab.lib.utils import ImageReader
-                canv.saveState()
-                if hasattr(canv, "setFillAlpha"): canv.setFillAlpha(0.07)
-                ir = ImageReader(logo_path)
-                ow, oh = ir.getSize(); w = A4[0] - 60*mm; r = w / ow; h = oh * r
-                x = 30*mm; y = (A4[1] - h)/2
-                canv.drawImage(logo_path, x, y, width=w, height=h, preserveAspectRatio=True, mask="auto")
-                canv.restoreState()
-            except Exception: pass
-        # footer text + page no.
+                for n in ("logo.png","logo.jpg","logo.jpeg"):
+                    if os.path.exists(n):
+                        canv.saveState()
+                        if hasattr(canv, "setFillAlpha"): canv.setFillAlpha(0.07)
+                        ir = ImageReader(n)
+                        ow, oh = ir.getSize(); w = A4[0] - 60*mm; r = w / ow; h = oh * r
+                        x = 30*mm; y = (A4[1] - h)/2
+                        canv.drawImage(n, x, y, width=w, height=h, preserveAspectRatio=True, mask="auto")
+                        canv.restoreState()
+                        break
+            except Exception:
+                pass
+
         canv.saveState()
         canv.setFont("Helvetica", 8)
+        # Full line above footer address
+        y_line = 20*mm
+        canv.setLineWidth(0.7)
+        canv.line(18*mm, y_line, A4[0] - 18*mm, y_line)
+
+        # Footer text
         line1 = "Office No. 5, Ground Floor, Adeshwar Arcade Commercial Premises CSL, Andheri - Kurla Road,"
         line2 = "Opp. Sangam Cinema, Andheri East, Mumbai - 400093.  Email: info@vpurohit.com, Contact: +91-8369508539"
         canv.drawCentredString(A4[0] / 2, 12*mm + 4, line1)
         canv.drawCentredString(A4[0] / 2, 12*mm - 6, line2)
+        # Page number
         canv.drawRightString(A4[0] - 18*mm, 12*mm - 18, f"Page {canv.getPageNumber()}")
         canv.restoreState()
 
@@ -318,6 +368,11 @@ with st.sidebar:
         st.session_state["gst_pct"] = st.number_input("GST %", 0, 100, int(st.session_state["gst_pct"]), 1)
         st.session_state["letterhead"] = st.checkbox("Letterhead mode (watermark logo)", value=st.session_state["letterhead"])
 
+        # Signature / Stamp uploader (optional)
+        sig_up = st.file_uploader("Signature / Stamp image (optional)", type=["png","jpg","jpeg"])
+        if sig_up is not None:
+            st.session_state["sig_bytes"] = sig_up.read()
+
         with st.expander("Data status", expanded=False):
             service_defs = len(df_app[["Service","SubService"]].drop_duplicates())
             st.write(f"Service definitions: **{service_defs}**")
@@ -336,6 +391,12 @@ with st.sidebar:
 with st.form("quote_form", clear_on_submit=False):
     client_name = st.text_input("Client Name*", st.session_state.get("client_name",""))
     client_type = st.selectbox("Client Type*", CLIENT_TYPES, index=0)
+
+    # Optional client contact fields (used in PDF if provided)
+    st.markdown("**Client Contact (optional, for PDF header)**")
+    addr = st.text_area("Address", st.session_state.get("client_addr",""), placeholder="Street, Area\nCity, State, PIN")
+    email = st.text_input("Email", st.session_state.get("client_email",""))
+    phone = st.text_input("Phone", st.session_state.get("client_phone",""))
 
     ct_norm = normalize_str(client_type)
     app_ct = df_app[(df_app["ClientType"] == ct_norm) & (df_app["Applicable"] == True)]
@@ -379,6 +440,9 @@ if submit:
             st.session_state["quote_df"] = df_quote
             st.session_state["client_name"] = client_name
             st.session_state["client_type"] = client_type
+            st.session_state["client_addr"] = addr
+            st.session_state["client_email"] = email
+            st.session_state["client_phone"] = phone
             st.session_state["editor_active"] = True
 
 if st.session_state["editor_active"] and not st.session_state["quote_df"].empty:
@@ -390,7 +454,8 @@ if st.session_state["editor_active"] and not st.session_state["quote_df"].empty:
         column_config={
             "Include": st.column_config.CheckboxColumn(help="Uncheck to remove this row from the quotation/PDF."),
             "Annual Fees (Rs.)": st.column_config.NumberColumn(
-                "Annual Fees (Rs.)", min_value=0, step=100, help="Edit the fee; totals & PDF will use this value.", format="%.0f"
+                "Annual Fees (Rs.)", min_value=0, step=100,
+                help="Edit the fee; totals & PDF will use this value.", format="%.0f"
             ),
         },
         num_rows="fixed",
@@ -420,24 +485,44 @@ if st.session_state["editor_active"] and not st.session_state["quote_df"].empty:
             st.rerun()
 
     if filtered.empty:
-        st.info("All rows are excluded. Select at least one row to enable PDF.")
+        st.info("All rows are excluded. Select at least one row to enable exports/PDF.")
     else:
+        # --- Exports: CSV & Excel ---
+        csv_bytes = filtered.to_csv(index=False).encode("utf-8")
+        xlsx_buf = io.BytesIO()
+        try:
+            with pd.ExcelWriter(xlsx_buf, engine="openpyxl") as writer:
+                filtered.to_excel(writer, index=False, sheet_name="Quotation")
+            xlsx_data = xlsx_buf.getvalue()
+        except Exception:
+            xlsx_data = None
+
+        colA, colB, colC = st.columns([1,1,1])
+        with colA:
+            st.download_button("⬇️ Download CSV", data=csv_bytes, file_name="quotation.csv", mime="text/csv", key="dl_csv")
+        with colB:
+            if xlsx_data:
+                st.download_button("⬇️ Download Excel", data=xlsx_data, file_name="quotation.xlsx",
+                                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="dl_xlsx")
+            else:
+                st.caption(":grey[Excel export unavailable (missing engine).]")
+
+        # --- PDF ---
         pdf_bytes = make_pdf(
-            st.session_state["client_name"],
-            st.session_state["client_type"],
-            st.session_state["quote_no"],
-            filtered,
-            subtotal,
-            float(st.session_state["discount_pct"]),
-            discount_amt,
-            float(st.session_state["gst_pct"]),
-            gst_amt,
-            grand,
+            st.session_state["client_name"], st.session_state["client_type"], st.session_state["quote_no"],
+            filtered, subtotal, float(st.session_state["discount_pct"]), discount_amt,
+            float(st.session_state["gst_pct"]), gst_amt, grand,
             letterhead=st.session_state["letterhead"],
+            addr=st.session_state.get("client_addr",""),
+            email=st.session_state.get("client_email",""),
+            phone=st.session_state.get("client_phone",""),
+            signature_bytes=st.session_state.get("sig_bytes")
         )
-        st.download_button(
-            "⬇️ Download PDF",
-            data=pdf_bytes,
-            file_name=f"Quotation_{st.session_state['client_name'].replace(' ', '_')}.pdf",
-            mime="application/pdf",
-        )
+        with colC:
+            st.download_button(
+                "⬇️ Download PDF",
+                data=pdf_bytes,
+                file_name=f"Quotation_{st.session_state['client_name'].replace(' ', '_')}.pdf",
+                mime="application/pdf",
+                key="dl_pdf"
+            )
