@@ -319,10 +319,20 @@ with st.sidebar:
         st.session_state["letterhead"] = st.checkbox("Letterhead mode (watermark logo)", value=st.session_state["letterhead"])
 
         with st.expander("Data status", expanded=False):
-            service_defs = len(df_app[["Service","SubService"]].drop_duplicates())
+            service_defs = len(df_app[["Service", "SubService"]].drop_duplicates())
             st.write(f"Service definitions: **{service_defs}**")
             status_df = build_status(df_app, df_fees)
-            st.dataframe(status_df, use_container_width=True)
+            all_ok = (status_df["Missing/Zero fees"] == 0).all()
+
+            if all_ok:
+                st.success("All applicable services have fees.")
+                st.dataframe(
+                    status_df.drop(columns=["Missing/Zero fees"]),
+                    use_container_width=True
+                )
+            else:
+                st.warning("Some fees are missing/zero. Review below.")
+                st.dataframe(status_df, use_container_width=True)
     except Exception as e:
         st.error(f"Error loading matrices: {e}")
         st.stop()
