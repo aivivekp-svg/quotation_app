@@ -10,7 +10,7 @@ from reportlab.lib.enums import TA_CENTER
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Flowable
 
 APP_TITLE = "Quotation Generator – V. Purohit & Associates"
 
@@ -52,7 +52,6 @@ def normalize_str(x):
     return (x or "").strip().upper()
 
 def title_with_acronyms(text: str) -> str:
-    """Title-case, fix 'of' to lower-case, and force known acronyms to uppercase."""
     if text is None:
         return ""
     t = " ".join(str(text).split()).title()
@@ -62,12 +61,10 @@ def title_with_acronyms(text: str) -> str:
     return t
 
 def service_display_override(raw_upper: str, pretty: str) -> str:
-    # Specific rename
     if raw_upper == "FILING OF GSTR RETURNS":
         return "Filing of GST Returns"
     return pretty
 
-# --- Indian number format (12,34,567) ---
 def money_inr(n: float) -> str:
     try:
         n = float(n)
@@ -164,7 +161,41 @@ def compute_totals(df_selected: pd.DataFrame, discount_pct: float):
     grand = round(taxable + gst_amt, 2)
     return subtotal, discount_amt, taxable, gst_amt, grand
 
-# --- PDF helpers ---
+# ---------- Letterhead background (Style B) ----------
+class PageBackgroundCard(Flowable):
+    """
+    Draws a soft page tint and a white content 'card' under all content.
+    Placed as the very first flowable in the story; wrap returns (0,0)
+    so it does not affect layout.
+    """
+    def __init__(self, tint_color="#F7F9FC", card_inset=10*mm, border_color=colors.HexColor("#E5E7EB")):
+        super().__init__()
+        self.tint_color = colors.HexColor(tint_color)
+        self.card_inset = card_inset
+        self.border_color = border_color
+
+    def wrap(self, availWidth, availHeight):
+        return (0, 0)
+
+    def draw(self):
+        canv = self.canv
+        pw, ph = A4
+        canv.saveState()
+        # Page tint (light)
+        canv.setFillColor(self.tint_color)
+        canv.rect(0, 0, pw, ph, stroke=0, fill=1)
+        # White content card with subtle border
+        x = self.card_inset
+        y = self.card_inset
+        w = pw - 2 * self.card_inset
+        h = ph - 2 * self.card_inset
+        canv.setFillColor(colors.white)
+        canv.setStrokeColor(self.border_color)
+        canv.setLineWidth(1)
+        canv.rect(x, y, w, h, stroke=1, fill=1)
+        canv.restoreState()
+
+# --- PDF table builders ---
 def build_grouped_pdf_rows(df: pd.DataFrame):
     rows = [["Service", "Details", "Annual Fees<br/>(Rs.)"]]
     styles = []
@@ -202,6 +233,7 @@ def make_pdf(client_name: str, client_type: str, quote_no: str,
     from reportlab.lib.utils import ImageReader
 
     buf = io.BytesIO()
+    # Keep margins so content sits comfortably inside the white card
     doc = SimpleDocTemplate(
         buf, pagesize=A4, leftMargin=18 * mm, rightMargin=18 * mm, topMargin=16 * mm, bottomMargin=16 * mm
     )
@@ -209,7 +241,10 @@ def make_pdf(client_name: str, client_type: str, quote_no: str,
     head_center = ParagraphStyle("HeadCenter", parent=styles["Normal"], alignment=TA_CENTER, fontName="Helvetica-Bold")
     story = []
 
-    # Logo (small; watermark handled in decorator if letterhead)
+    # ---- Background card first (drawn under all content) ----
+    story.append(PageBackgroundCard(tint_color="#F7F9FC", card_inset=10*mm, border_color=colors.HexColor("#E5E7EB")))
+
+    # Small logo (watermark handled later if letterhead=True)
     def find_logo_path():
         for name in ("logo.png", "logo.jpg", "logo.jpeg"):
             if os.path.exists(name):
@@ -254,7 +289,7 @@ def make_pdf(client_name: str, client_type: str, quote_no: str,
         Paragraph("<b>Details</b>", head_center),
         Paragraph("<b>Annual Fees</b><br/><b>(Rs.)</b>", head_center),
     ]
-    col_widths = [60 * mm, 80 * mm, 30 * mm]
+    col_widths = [60 * mm, 80 * mm, 30 * mm]  # fits safely within 174mm frame width
     table = Table(table_rows, colWidths=col_widths, repeatRows=1)
     table.setStyle(
         TableStyle(
@@ -348,8 +383,9 @@ def make_pdf(client_name: str, client_type: str, quote_no: str,
         story.append(ev)
         story.append(Spacer(1, 10))
 
-    # Footer / watermark / page numbers
+    # Footer / optional watermark / page numbers
     def _decorate(canv, doc_):
+        # Optional watermark (letterhead mode)
         if letterhead:
             try:
                 import os
@@ -371,6 +407,8 @@ def make_pdf(client_name: str, client_type: str, quote_no: str,
                         break
             except Exception:
                 pass
+
+        # Footer lines/text
         canv.saveState()
         canv.setFont("Helvetica", 8)
         y_line = 20 * mm
@@ -410,7 +448,7 @@ def build_status(df_app, df_fees):
 # ---------- UI ----------
 st.set_page_config(page_title=APP_TITLE, page_icon="📄", layout="centered")
 
-# Load matrices FIRST (so we can use them in sidebar & main)
+# Load matrices FIRST
 try:
     df_app, df_fees, source = load_matrices()
 except Exception as e:
@@ -461,20 +499,15 @@ brand_color = st.session_state["brand_color"]
 
 st.markdown(f"""
 <style>
-/* Load Material icon fonts so Streamlit UI icons render correctly */
 @import url('https://fonts.googleapis.com/icon?family=Material+Icons');
 @import url('https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght@300..700&display=swap');
 
-/* Brand color on buttons only (no global font overrides) */
 .stButton > button, .stDownloadButton > button {{
   background: {brand_color} !important; color: #fff !important; border: 0; border-radius: 6px;
 }}
-
-/* Light/Dark backgrounds */
 .stApp {{ background: {"#ffffff" if theme_choice=="Light" else "#0f1117"} !important; }}
 html, body {{ color: {"#111" if theme_choice=="Light" else "#e6e6e6"} !important; }}
 
-/* Ensure Streamlit icons use Material fonts (sidebar toggle, expanders) */
 [data-testid="stSidebarCollapseButton"] span,
 [data-testid="stExpanderToggleIcon"] span,
 .material-icons, .material-symbols-outlined,
@@ -484,10 +517,7 @@ html, body {{ color: {"#111" if theme_choice=="Light" else "#e6e6e6"} !important
   -webkit-font-smoothing: antialiased;
 }}
 
-/* Hide tiny anchor icons next to headings only (not toggles) */
 h1 > a, h2 > a, h3 > a, h4 > a {{ display: none !important; }}
-
-/* Section labels */
 .label-lg {{ font-size: 1.05rem; font-weight: 700; margin: 6px 0 2px 0; }}
 </style>
 """, unsafe_allow_html=True)
