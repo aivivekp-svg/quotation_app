@@ -426,19 +426,48 @@ brand_color = st.session_state["brand_color"]
 
 st.markdown(f"""
 <style>
+/* Load Material Symbols so Streamlit icons render correctly */
+@import url('https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght@300..700&display=swap');
+
 {font_css}
+
+/* Brand variables */
 :root {{
   --brand: {brand_color};
   --app-font: {'"'+font_choice+'", ' if font_choice!='System' else ''}system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
 }}
-.stApp * {{ font-family: {family} !important; }}
+
+/* IMPORTANT: Do NOT override icon glyphs */
+.stApp *:not(.material-icons):not(.material-symbols-outlined):not(.material-symbols-rounded):not([class*="material-icons"]):not([class*="material-symbols"]) {{
+  font-family: {family} !important;
+}}
+
+/* Keep Material Symbols for Streamlit's built-in icons (sidebar toggle, expanders, etc.) */
+.material-icons,
+.material-symbols-outlined,
+.material-symbols-rounded,
+[class*="material-icons"],
+[class*="material-symbols"] {{
+  font-family: 'Material Symbols Outlined' !important;
+  font-weight: normal; font-style: normal;
+  font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+  line-height: 1; letter-spacing: normal; text-transform: none;
+  -webkit-font-feature-settings: 'liga';
+  -webkit-font-smoothing: antialiased;
+}}
+
+/* Buttons */
 .stButton > button, .stDownloadButton > button {{
   background: var(--brand) !important; color: white !important; border: 0 !important; border-radius: 6px !important;
 }}
+
+/* Light/Dark */
 .stApp {{ background: {"#ffffff" if theme_choice=="Light" else "#0f1117"} !important; }}
 html, body, [class^="css"] {{ color: {"#111" if theme_choice=="Light" else "#e6e6e6"} !important; }}
-/* Hide heading anchor icons */
+
+/* Hide heading anchor icons (tiny link symbols next to titles) */
 h1 > a, h2 > a, h3 > a, h4 > a {{ display: none !important; }}
+
 /* Section labels */
 .label-lg {{ font-size: 1.05rem; font-weight: 700; margin: 6px 0 2px 0; }}
 </style>
