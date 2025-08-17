@@ -10,7 +10,9 @@ from reportlab.lib.enums import TA_CENTER
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Flowable
+from reportlab.platypus import (
+    BaseDocTemplate, Frame, PageTemplate, Paragraph, Spacer, Table, TableStyle
+)
 
 APP_TITLE = "Quotation Generator – V. Purohit & Associates"
 
@@ -161,41 +163,7 @@ def compute_totals(df_selected: pd.DataFrame, discount_pct: float):
     grand = round(taxable + gst_amt, 2)
     return subtotal, discount_amt, taxable, gst_amt, grand
 
-# ---------- Letterhead background (Style B) ----------
-class PageBackgroundCard(Flowable):
-    """
-    Draws a soft page tint and a white content 'card' under all content.
-    Placed as the very first flowable in the story; wrap returns (0,0)
-    so it does not affect layout.
-    """
-    def __init__(self, tint_color="#F7F9FC", card_inset=10*mm, border_color=colors.HexColor("#E5E7EB")):
-        super().__init__()
-        self.tint_color = colors.HexColor(tint_color)
-        self.card_inset = card_inset
-        self.border_color = border_color
-
-    def wrap(self, availWidth, availHeight):
-        return (0, 0)
-
-    def draw(self):
-        canv = self.canv
-        pw, ph = A4
-        canv.saveState()
-        # Page tint (light)
-        canv.setFillColor(self.tint_color)
-        canv.rect(0, 0, pw, ph, stroke=0, fill=1)
-        # White content card with subtle border
-        x = self.card_inset
-        y = self.card_inset
-        w = pw - 2 * self.card_inset
-        h = ph - 2 * self.card_inset
-        canv.setFillColor(colors.white)
-        canv.setStrokeColor(self.border_color)
-        canv.setLineWidth(1)
-        canv.rect(x, y, w, h, stroke=1, fill=1)
-        canv.restoreState()
-
-# --- PDF table builders ---
+# ---------- PDF helpers ----------
 def build_grouped_pdf_rows(df: pd.DataFrame):
     rows = [["Service", "Details", "Annual Fees<br/>(Rs.)"]]
     styles = []
@@ -233,18 +201,76 @@ def make_pdf(client_name: str, client_type: str, quote_no: str,
     from reportlab.lib.utils import ImageReader
 
     buf = io.BytesIO()
-    # Keep margins so content sits comfortably inside the white card
-    doc = SimpleDocTemplate(
-        buf, pagesize=A4, leftMargin=18 * mm, rightMargin=18 * mm, topMargin=16 * mm, bottomMargin=16 * mm
+
+    # Build a PageTemplate so background (tint + white card + optional watermark)
+    # is drawn BEFORE content; footer is drawn AFTER content.
+    left, right, top, bottom = 18*mm, 18*mm, 16*mm, 16*mm
+    card_inset = 10*mm
+    brand_blue = colors.HexColor("#0F4C81")
+
+    def on_page(canv, doc_):
+        pw, ph = A4
+        # Page tint
+        canv.saveState()
+        canv.setFillColor(colors.HexColor("#F7F9FC"))
+        canv.rect(0, 0, pw, ph, stroke=0, fill=1)
+        # White content card with border
+        x = card_inset
+        y = card_inset
+        w = pw - 2*card_inset
+        h = ph - 2*card_inset
+        canv.setFillColor(colors.white)
+        canv.setStrokeColor(colors.HexColor("#E5E7EB"))
+        canv.setLineWidth(1)
+        canv.rect(x, y, w, h, stroke=1, fill=1)
+        # Optional watermark (letterhead logo) — draw very light under content
+        if letterhead:
+            try:
+                for n in ("logo.png", "logo.jpg", "logo.jpeg"):
+                    if os.path.exists(n):
+                        ir = ImageReader(n)
+                        ow, oh = ir.getSize()
+                        target_w = pw - 80*mm
+                        r = target_w / ow
+                        target_h = oh * r
+                        cx = (pw - target_w) / 2
+                        cy = (ph - target_h) / 2
+                        if hasattr(canv, "setFillAlpha"):
+                            canv.setFillAlpha(0.07)
+                        canv.drawImage(n, cx, cy, width=target_w, height=target_h,
+                                       preserveAspectRatio=True, mask="auto")
+                        if hasattr(canv, "setFillAlpha"):
+                            canv.setFillAlpha(1)
+                        break
+            except Exception:
+                pass
+        canv.restoreState()
+
+    def on_page_end(canv, doc_):
+        # Footer lines/text
+        canv.saveState()
+        canv.setFont("Helvetica", 8)
+        y_line = 20*mm
+        canv.setLineWidth(0.7)
+        canv.line(18*mm, y_line, A4[0] - 18*mm, y_line)
+        line1 = "Office No. 5, Ground Floor, Adeshwar Arcade Commercial Premises CSL, Andheri - Kurla Road,"
+        line2 = "Opp. Sangam Cinema, Andheri East, Mumbai - 400093.  Email: info@vpurohit.com, Contact: +91-8369508539"
+        canv.drawCentredString(A4[0] / 2, 12*mm + 4, line1)
+        canv.drawCentredString(A4[0] / 2, 12*mm - 6, line2)
+        canv.drawRightString(A4[0] - 18*mm, 12*mm - 18, f"Page {canv.getPageNumber()}")
+        canv.restoreState()
+
+    doc = BaseDocTemplate(
+        buf, pagesize=A4, leftMargin=left, rightMargin=right, topMargin=top, bottomMargin=bottom
     )
+    frame = Frame(doc.leftMargin, doc.bottomMargin, doc.width, doc.height, id="normal")
+    doc.addPageTemplates(PageTemplate(id="letterhead", frames=[frame], onPage=on_page, onPageEnd=on_page_end))
+
     styles = getSampleStyleSheet()
     head_center = ParagraphStyle("HeadCenter", parent=styles["Normal"], alignment=TA_CENTER, fontName="Helvetica-Bold")
     story = []
 
-    # ---- Background card first (drawn under all content) ----
-    story.append(PageBackgroundCard(tint_color="#F7F9FC", card_inset=10*mm, border_color=colors.HexColor("#E5E7EB")))
-
-    # Small logo (watermark handled later if letterhead=True)
+    # Small logo (when not using watermark mode)
     def find_logo_path():
         for name in ("logo.png", "logo.jpg", "logo.jpeg"):
             if os.path.exists(name):
@@ -255,9 +281,9 @@ def make_pdf(client_name: str, client_type: str, quote_no: str,
     if logo_path and not letterhead:
         ir = ImageReader(logo_path)
         ow, oh = ir.getSize()
-        max_w, max_h = 26 * mm, 26 * mm
-        r = min(max_w / ow, max_h / oh)
-        story.append(Image(logo_path, width=ow * r, height=oh * r))
+        max_w, max_h = 26*mm, 26*mm
+        r = min(max_w/ow, max_h/oh)
+        story.append(Image(logo_path, width=ow*r, height=oh*r))
         story.append(Spacer(1, 4))
 
     # Title
@@ -265,7 +291,7 @@ def make_pdf(client_name: str, client_type: str, quote_no: str,
     story.append(Paragraph("<b>Annual Fees Proposal</b>", styles["h2"]))
     story.append(Spacer(1, 6))
 
-    # Meta info (requested order)
+    # Meta info
     meta_lines = [
         f"<b>Client Name:</b> {client_name}",
         f"<b>Client Type:</b> {client_type}",
@@ -282,35 +308,34 @@ def make_pdf(client_name: str, client_type: str, quote_no: str,
     story.append(Paragraph("<br/>".join(meta_lines), styles["Normal"]))
     story.append(Spacer(1, 8))
 
-    # MAIN TABLE
+    # MAIN TABLE (brand-blue header)
     table_rows, extra_styles = build_grouped_pdf_rows(df_quote)
     table_rows[0] = [
         Paragraph("<b>Service</b>", head_center),
         Paragraph("<b>Details</b>", head_center),
         Paragraph("<b>Annual Fees</b><br/><b>(Rs.)</b>", head_center),
     ]
-    col_widths = [60 * mm, 80 * mm, 30 * mm]  # fits safely within 174mm frame width
+    col_widths = [60*mm, 80*mm, 30*mm]  # total 170mm < frame width (174mm)
     table = Table(table_rows, colWidths=col_widths, repeatRows=1)
-    table.setStyle(
-        TableStyle(
-            [
-                ("FONTSIZE", (0, 0), (-1, 0), 10),
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f0f0f0")),
-                ("VALIGN", (0, 0), (-1, 0), "MIDDLE"),
-                ("TOPPADDING", (0, 0), (-1, 0), 6),
-                ("BOTTOMPADDING", (0, 0), (-1, 0), 6),
-                ("BOX", (0, 0), (-1, 0), 0.9, colors.grey),
-                ("INNERGRID", (0, 0), (-1, 0), 0.9, colors.grey),
-                ("FONTSIZE", (0, 1), (-1, -1), 10),
-                ("TOPPADDING", (0, 1), (-1, -1), 4),
-                ("BOTTOMPADDING", (0, 1), (-1, -1), 4),
-                ("ALIGN", (2, 1), (2, -1), "RIGHT"),
-                ("INNERGRID", (0, 1), (-1, -1), 0.3, colors.HexColor("#d9d9d9")),
-                ("BOX", (0, 0), (-1, -1), 1.0, colors.black),
-            ]
-            + extra_styles
-        )
-    )
+    table.setStyle(TableStyle(
+        [
+            ("FONTSIZE", (0,0), (-1,0), 10),
+            ("BACKGROUND", (0,0), (-1,0), brand_blue),
+            ("TEXTCOLOR", (0,0), (-1,0), colors.white),
+            ("VALIGN", (0,0), (-1,0), "MIDDLE"),
+            ("TOPPADDING", (0,0), (-1,0), 6),
+            ("BOTTOMPADDING", (0,0), (-1,0), 6),
+            ("BOX", (0,0), (-1,0), 0.9, brand_blue),
+            ("INNERGRID", (0,0), (-1,0), 0.9, brand_blue),
+
+            ("FONTSIZE", (0,1), (-1,-1), 10),
+            ("TOPPADDING", (0,1), (-1,-1), 4),
+            ("BOTTOMPADDING", (0,1), (-1,-1), 4),
+            ("ALIGN", (2,1), (2,-1), "RIGHT"),
+            ("INNERGRID", (0,1), (-1,-1), 0.3, colors.HexColor("#d9d9d9")),
+            ("BOX", (0,0), (-1,-1), 1.0, colors.black),
+        ] + extra_styles
+    ))
     story.append(table)
     story.append(Spacer(1, 8))
 
@@ -322,21 +347,17 @@ def make_pdf(client_name: str, client_type: str, quote_no: str,
         ["", "GST (18%)", money_inr(gst_amt)],
         ["", "Grand Total", money_inr(grand)],
     ]
-    t2 = Table([["", "", ""], *tot_lines], colWidths=col_widths)
-    t2.setStyle(
-        TableStyle(
-            [
-                ("FONTSIZE", (0, 0), (-1, -1), 10),
-                ("ALIGN", (2, 0), (2, -1), "RIGHT"),
-                ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
-                ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#fafafa")),
-                ("LINEABOVE", (0, 1), (-1, 1), 0.5, colors.grey),
-                ("TOPPADDING", (0, 1), (-1, -1), 4),
-                ("BOTTOMPADDING", (0, 1), (-1, -1), 4),
-                ("BOX", (0, 0), (-1, -1), 1.0, colors.black),
-            ]
-        )
-    )
+    t2 = Table([["","",""], *tot_lines], colWidths=col_widths)
+    t2.setStyle(TableStyle([
+        ("FONTSIZE", (0,0), (-1,-1), 10),
+        ("ALIGN", (2,0), (2,-1), "RIGHT"),
+        ("FONTNAME", (0,-1), (-1,-1), "Helvetica-Bold"),
+        ("BACKGROUND", (0,-1), (-1,-1), colors.HexColor("#fafafa")),
+        ("LINEABOVE", (0,1), (-1,1), 0.5, colors.grey),
+        ("TOPPADDING", (0,1), (-1,-1), 4),
+        ("BOTTOMPADDING", (0,1), (-1,-1), 4),
+        ("BOX", (0,0), (-1,-1), 1.0, colors.black),
+    ]))
     story.append(t2)
     story.append(Spacer(1, 8))
 
@@ -351,7 +372,7 @@ def make_pdf(client_name: str, client_type: str, quote_no: str,
     story.append(Paragraph(notes, styles["Normal"]))
     story.append(Spacer(1, 10))
 
-    # EVENT-BASED TABLE (separate)
+    # EVENT-BASED TABLE (brand-blue header)
     if not df_event.empty:
         story.append(Paragraph("<b>Event-based charges (as applicable, not included in annual fees)</b>", styles["Normal"]))
         story.append(Spacer(1, 4))
@@ -360,68 +381,28 @@ def make_pdf(client_name: str, client_type: str, quote_no: str,
             Paragraph("<b>Details</b>", head_center),
             Paragraph("<b>Fees</b><br/><b>(Rs.)</b>", head_center),
         ]
-        ev = Table(ev_rows, colWidths=[140 * mm, 30 * mm], repeatRows=1)
-        ev.setStyle(
-            TableStyle(
-                [
-                    ("FONTSIZE", (0, 0), (-1, 0), 10),
-                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f0f0f0")),
-                    ("VALIGN", (0, 0), (-1, 0), "MIDDLE"),
-                    ("TOPPADDING", (0, 0), (-1, 0), 6),
-                    ("BOTTOMPADDING", (0, 0), (-1, 0), 6),
-                    ("BOX", (0, 0), (-1, 0), 0.9, colors.grey),
-                    ("INNERGRID", (0, 0), (-1, 0), 0.9, colors.grey),
-                    ("FONTSIZE", (0, 1), (-1, -1), 10),
-                    ("TOPPADDING", (0, 1), (-1, -1), 4),
-                    ("BOTTOMPADDING", (0, 1), (-1, -1), 4),
-                    ("ALIGN", (1, 1), (1, -1), "RIGHT"),
-                    ("INNERGRID", (0, 1), (-1, -1), 0.3, colors.HexColor("#d9d9d9")),
-                    ("BOX", (0, 0), (-1, -1), 1.0, colors.black),
-                ]
-            )
-        )
+        ev = Table(ev_rows, colWidths=[140*mm, 30*mm], repeatRows=1)
+        ev.setStyle(TableStyle([
+            ("FONTSIZE", (0,0), (-1,0), 10),
+            ("BACKGROUND", (0,0), (-1,0), brand_blue),
+            ("TEXTCOLOR", (0,0), (-1,0), colors.white),
+            ("VALIGN", (0,0), (-1,0), "MIDDLE"),
+            ("TOPPADDING", (0,0), (-1,0), 6),
+            ("BOTTOMPADDING", (0,0), (-1,0), 6),
+            ("BOX", (0,0), (-1,0), 0.9, brand_blue),
+            ("INNERGRID", (0,0), (-1,0), 0.9, brand_blue),
+
+            ("FONTSIZE", (0,1), (-1,-1), 10),
+            ("TOPPADDING", (0,1), (-1,-1), 4),
+            ("BOTTOMPADDING", (0,1), (-1,-1), 4),
+            ("ALIGN", (1,1), (1,-1), "RIGHT"),
+            ("INNERGRID", (0,1), (-1,-1), 0.3, colors.HexColor("#d9d9d9")),
+            ("BOX", (0,0), (-1,-1), 1.0, colors.black),
+        ]))
         story.append(ev)
         story.append(Spacer(1, 10))
 
-    # Footer / optional watermark / page numbers
-    def _decorate(canv, doc_):
-        # Optional watermark (letterhead mode)
-        if letterhead:
-            try:
-                import os
-                from reportlab.lib.utils import ImageReader
-                for n in ("logo.png", "logo.jpg", "logo.jpeg"):
-                    if os.path.exists(n):
-                        canv.saveState()
-                        if hasattr(canv, "setFillAlpha"):
-                            canv.setFillAlpha(0.07)
-                        ir = ImageReader(n)
-                        ow, oh = ir.getSize()
-                        w = A4[0] - 60 * mm
-                        r = w / ow
-                        h = oh * r
-                        x = 30 * mm
-                        y = (A4[1] - h) / 2
-                        canv.drawImage(n, x, y, width=w, height=h, preserveAspectRatio=True, mask="auto")
-                        canv.restoreState()
-                        break
-            except Exception:
-                pass
-
-        # Footer lines/text
-        canv.saveState()
-        canv.setFont("Helvetica", 8)
-        y_line = 20 * mm
-        canv.setLineWidth(0.7)
-        canv.line(18 * mm, y_line, A4[0] - 18 * mm, y_line)
-        line1 = "Office No. 5, Ground Floor, Adeshwar Arcade Commercial Premises CSL, Andheri - Kurla Road,"
-        line2 = "Opp. Sangam Cinema, Andheri East, Mumbai - 400093.  Email: info@vpurohit.com, Contact: +91-8369508539"
-        canv.drawCentredString(A4[0] / 2, 12 * mm + 4, line1)
-        canv.drawCentredString(A4[0] / 2, 12 * mm - 6, line2)
-        canv.drawRightString(A4[0] - 18 * mm, 12 * mm - 18, f"Page {canv.getPageNumber()}")
-        canv.restoreState()
-
-    doc.build(story, onFirstPage=_decorate, onLaterPages=_decorate)
+    doc.build(story)
     return buf.getvalue()
 
 def build_status(df_app, df_fees):
@@ -587,7 +568,7 @@ if st.session_state["editor_active"] and (
 ):
     st.success("Edit annual fees below. Event-based charges are listed separately and not included in totals.")
 
-    # Main table editor (fees editable, Include toggles)
+    # Main table editor
     if not st.session_state["quote_df"].empty:
         edited = st.data_editor(
             st.session_state["quote_df"],
@@ -609,7 +590,7 @@ if st.session_state["editor_active"] and (
     else:
         filtered = pd.DataFrame(columns=["Service", "Details", "Annual Fees (Rs.)"])
 
-    # Event-based editor (fees editable; not included in totals)
+    # Event-based editor
     event_df = st.session_state["event_df"].copy()
     if not event_df.empty:
         st.subheader("Event-based charges (as applicable)")
@@ -630,7 +611,7 @@ if st.session_state["editor_active"] and (
         event_edited["Annual Fees (Rs.)"] = pd.to_numeric(event_edited["Annual Fees (Rs.)"], errors="coerce").fillna(0.0)
         st.session_state["event_df"] = event_edited
 
-    # Totals for main table (UI shown in INR format)
+    # Totals (UI)
     subtotal, discount_amt, taxable, gst_amt, grand = compute_totals(filtered, st.session_state["discount_pct"])
     c1, c2, c3 = st.columns([1, 1, 1])
     with c1:
