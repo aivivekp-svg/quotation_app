@@ -394,7 +394,7 @@ with st.sidebar:
         "1. Create annual fees quotations based on client type\n"
         "2. Fees derived from fees master already provided\n"
         "3. Fees amount is still editable\n"
-        "4. Export to PDF/Excel/CSV"
+        "4. Export to PDF/Excel"
     )
     st.divider()
 
