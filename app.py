@@ -47,6 +47,7 @@ if "client_addr" not in st.session_state: st.session_state["client_addr"] = ""
 if "client_email" not in st.session_state: st.session_state["client_email"] = ""
 if "client_phone" not in st.session_state: st.session_state["client_phone"] = ""
 if "sig_bytes" not in st.session_state: st.session_state["sig_bytes"] = None  # signature image bytes
+if "presets" not in st.session_state: st.session_state["presets"] = {}  # {"CLIENTTYPE": {"PresetName": {"main":df,"event":df}}}
 
 # ---------- Helpers ----------
 def normalize_str(x):
@@ -66,8 +67,26 @@ def service_display_override(raw_upper: str, pretty: str) -> str:
         return "Filing of GST Returns"
     return pretty
 
-def money(n: float) -> str:
-    return f"{n:,.0f}"
+# --- Indian number format (12,34,567) ---
+def money_inr(n: float) -> str:
+    try:
+        n = float(n)
+    except Exception:
+        return "0"
+    neg = n < 0
+    n = abs(int(round(n)))
+    s = str(n)
+    if len(s) <= 3:
+        res = s
+    else:
+        res = s[-3:]
+        s = s[:-3]
+        while len(s) > 2:
+            res = s[-2:] + "," + res
+            s = s[:-2]
+        if s:
+            res = s + "," + res
+    return "-" + res if neg else res
 
 def load_matrices():
     xl = pd.ExcelFile("matrices.xlsx")  # always from repo
@@ -82,7 +101,6 @@ def load_matrices():
     return df_app, df_fees, "matrices.xlsx"
 
 def split_main_vs_event(applicable: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Return (main_applicable, event_applicable)."""
     ev_mask = applicable["Service"].eq(normalize_str(EVENT_SERVICE))
     return applicable.loc[~ev_mask].copy(), applicable.loc[ev_mask].copy()
 
@@ -160,18 +178,17 @@ def build_grouped_pdf_rows(df: pd.DataFrame):
         for _, row in grp.iterrows():
             amt = pd.to_numeric(row["Annual Fees (Rs.)"], errors="coerce")
             amt = 0.0 if pd.isna(amt) else float(amt)
-            rows.append(["", row["Details"], money(amt)])
+            rows.append(["", row["Details"], money_inr(amt)])
             r += 1
     return rows, styles
 
 # --- PDF table rows for Event-based charges (no Service col) ---
 def build_event_pdf_rows(df: pd.DataFrame):
     rows = [["Details", "Fees<br/>(Rs.)"]]
-    # Just list details with amount
     for _, row in df.iterrows():
         amt = pd.to_numeric(row["Annual Fees (Rs.)"], errors="coerce")
         amt = 0.0 if pd.isna(amt) else float(amt)
-        rows.append([row["Details"], money(amt)])
+        rows.append([row["Details"], money_inr(amt)])
     return rows
 
 def make_pdf(client_name: str, client_type: str, quote_no: str,
@@ -258,11 +275,11 @@ def make_pdf(client_name: str, client_type: str, quote_no: str,
 
     # TOTALS (boxed)
     tot_lines = [
-        ["", "Subtotal", money(subtotal)],
-        ["", f"Discount ({discount_pct:.0f}%)", f"- {money(discount_amt)}"] if discount_amt > 0 else ["", "Discount (0%)", money(0)],
-        ["", "Taxable Amount", money(subtotal - discount_amt)],
-        ["", "GST (18%)", money(gst_amt)],
-        ["", "Grand Total", money(grand)],
+        ["", "Subtotal", money_inr(subtotal)],
+        ["", f"Discount ({discount_pct:.0f}%)", f"- {money_inr(discount_amt)}"] if discount_amt > 0 else ["", "Discount (0%)", money_inr(0)],
+        ["", "Taxable Amount", money_inr(subtotal - discount_amt)],
+        ["", "GST (18%)", money_inr(gst_amt)],
+        ["", "Grand Total", money_inr(grand)],
     ]
     t2 = Table([["","", ""], *tot_lines], colWidths=col_widths)
     t2.setStyle(TableStyle([
@@ -276,6 +293,17 @@ def make_pdf(client_name: str, client_type: str, quote_no: str,
         ("BOX", (0,0), (-1,-1), 1.0, colors.black),
     ]))
     story.append(t2)
+    story.append(Spacer(1, 8))
+
+    # Notes (restored)
+    notes = (
+        "<b>Note:</b><br/>"
+        "1. The fees are exclusive of taxes and out-of-pocket expenses.<br/>"
+        "2. GST 18% extra.<br/>"
+        "3. Our scope is limited to the services listed above.<br/>"
+        "4. The above quotation is valid for a period of 30 days."
+    )
+    story.append(Paragraph(notes, styles["Normal"]))
     story.append(Spacer(1, 10))
 
     # EVENT-BASED TABLE (separate, not included in totals)
@@ -283,7 +311,7 @@ def make_pdf(client_name: str, client_type: str, quote_no: str,
         story.append(Paragraph("<b>Event-based charges (as applicable, not included in annual fees)</b>", styles["Normal"]))
         story.append(Spacer(1, 4))
         ev_rows = build_event_pdf_rows(df_event)
-        ev_col_widths = [140*mm, 30*mm]  # keeps 170mm total width
+        ev_col_widths = [140*mm, 30*mm]
         ev = Table(ev_rows, colWidths=ev_col_widths, repeatRows=1)
         ev.setStyle(TableStyle([
             # Header
@@ -384,10 +412,7 @@ def build_status(df_app, df_fees):
 # ---------- UI ----------
 st.set_page_config(page_title=APP_TITLE, page_icon="📄", layout="centered")
 
-# Two-line header in UI
-st.title("Quotation Generator")
-st.subheader("V. Purohit & Associates")
-
+# --------- Appearance (Brand theme) ---------
 with st.sidebar:
     st.markdown(
         "**What this tool does:**\n\n"
@@ -397,8 +422,6 @@ with st.sidebar:
         "4. Export to PDF/Excel"
     )
     st.divider()
-
-    # Numbered options
     st.subheader("Options")
     st.session_state["discount_pct"] = st.number_input("1) Discount %", 0, 100, int(st.session_state["discount_pct"]), 1)
     st.session_state["letterhead"] = st.checkbox("2) Letterhead mode (watermark logo)", value=st.session_state["letterhead"])
@@ -406,55 +429,94 @@ with st.sidebar:
     if sig_up is not None:
         st.session_state["sig_bytes"] = sig_up.read()
 
-    # Load matrices (no upload option)
-    try:
-        df_app, df_fees, source = load_matrices()
-        with st.expander("Data status", expanded=False):
-            service_defs = len(df_app[["Service","SubService"]].drop_duplicates())
-            st.write(f"Source: **{source}**")
-            st.write(f"Service definitions: **{service_defs}**")
-            status_df = build_status(df_app, df_fees)
-            all_ok = (status_df["Missing/Zero fees"] == 0).all()
-            if all_ok:
-                st.success("All applicable services have fees.")
-                st.dataframe(status_df.drop(columns=["Missing/Zero fees"]), use_container_width=True)
-            else:
-                st.warning("Some fees are missing/zero. Review below.")
-                st.dataframe(status_df, use_container_width=True)
-    except Exception as e:
-        st.error(f"Error loading matrices: {e}")
-        st.stop()
+    st.divider()
+    st.subheader("Appearance")
+    theme_choice = st.radio("Theme", ["Light","Dark"], horizontal=True, index=0)
+    brand_color = st.color_picker("Brand color", "#0F4C81")
+    font_choice = st.selectbox("Font", ["System", "Poppins", "Inter"], index=1)
 
-# ----- Form to generate initial table -----
+# Inject CSS for theme + font + bigger bullets
+font_css = ""
+if font_choice in ("Poppins", "Inter"):
+    gfont = "Poppins:wght@400;600" if font_choice == "Poppins" else "Inter:wght@400;600"
+    font_css = f"@import url('https://fonts.googleapis.com/css2?family={gfont}&display=swap');"
+family = "var(--app-font, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial)"
+st.markdown(f"""
+<style>
+{font_css}
+:root {{
+  --brand: {brand_color};
+  --app-font: {'"'+font_choice+'", ' if font_choice!='System' else ''}system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+}}
+.stApp * {{ font-family: {family} !important; }}
+.stButton > button, .stDownloadButton > button {{
+  background: var(--brand) !important; color: white !important; border: 0 !important; border-radius: 6px !important;
+}}
+/* Light/Dark backgrounds */
+.stApp {{ background: {"#ffffff" if theme_choice=="Light" else "#0f1117"} !important; }}
+html, body, [class^="css"] {{ color: {"#111" if theme_choice=="Light" else "#e6e6e6"} !important; }}
+/* Section labels */
+.label-lg {{ font-size: 1.05rem; font-weight: 600; margin: 4px 0; }}
+.bullet::before {{ content: "➤ "; color: var(--brand); }}
+</style>
+""", unsafe_allow_html=True)
+
+# ---------- Header ----------
+st.title("Quotation Generator")
+st.subheader("V. Purohit & Associates")
+
+# ---------- Data load + status ----------
+try:
+    df_app, df_fees, source = load_matrices()
+    with st.expander("Data status", expanded=False):
+        service_defs = len(df_app[["Service","SubService"]].drop_duplicates())
+        st.write(f"Source: **{source}**")
+        st.write(f"Service definitions: **{service_defs}**")
+        status_df = build_status(df_app, df_fees)
+        all_ok = (status_df["Missing/Zero fees"] == 0).all()
+        if all_ok:
+            st.success("All applicable services have fees.")
+            st.dataframe(status_df.drop(columns=["Missing/Zero fees"]), use_container_width=True)
+        else:
+            st.warning("Some fees are missing/zero. Review below.")
+            st.dataframe(status_df, use_container_width=True)
+except Exception as e:
+    st.error(f"Error loading matrices: {e}")
+    st.stop()
+
+# ---------- Form ----------
 with st.form("quote_form", clear_on_submit=False):
-    client_name = st.text_input("Client Name*", st.session_state.get("client_name",""))
-    client_type = st.selectbox("Client Type*", CLIENT_TYPES, index=0)
+    st.markdown('<div class="label-lg bullet">Client Name*</div>', unsafe_allow_html=True)
+    client_name = st.text_input("", st.session_state.get("client_name",""), placeholder="Enter client name")
 
-    # Optional client contact fields (used in PDF if provided)
-    st.markdown("**Client Contact (optional, for PDF header)**")
-    addr = st.text_area("Address", st.session_state.get("client_addr",""), placeholder="Street, Area\nCity, State, PIN")
-    email = st.text_input("Email", st.session_state.get("client_email",""))
-    phone = st.text_input("Phone", st.session_state.get("client_phone",""))
+    st.markdown('<div class="label-lg bullet">Client Type*</div>', unsafe_allow_html=True)
+    client_type = st.selectbox("", CLIENT_TYPES, index=0)
+
+    st.markdown('<div class="label-lg bullet">Client Contact (optional)</div>', unsafe_allow_html=True)
+    addr = st.text_area("", st.session_state.get("client_addr",""), placeholder="Street, Area\nCity, State, PIN")
+    colX, colY = st.columns(2)
+    with colX:
+        email = st.text_input("", st.session_state.get("client_email",""), placeholder="Email")
+    with colY:
+        phone = st.text_input("", st.session_state.get("client_phone",""), placeholder="Phone")
 
     ct_norm = normalize_str(client_type)
     app_ct = df_app[(df_app["ClientType"] == ct_norm) & (df_app["Applicable"] == True)]
 
-    selected_accounting = st.radio("Accounting – choose one plan", ACCOUNTING_PLANS, index=3, horizontal=True)
+    st.markdown('<div class="label-lg bullet">Accounting – choose one plan</div>', unsafe_allow_html=True)
+    selected_accounting = st.radio("", ACCOUNTING_PLANS, index=3, horizontal=True)
 
-    # NOTE: Event Based Filing removed from UI entirely
-
-    # Profession Tax Returns – choose one (if applicable)
+    st.markdown('<div class="label-lg bullet">Profession Tax Returns – choose one type</div>', unsafe_allow_html=True)
     pt_options = app_ct.loc[app_ct["Service"] == normalize_str(PT_SERVICE), "SubService"].dropna().unique().tolist()
     pt_options_tc = sorted([title_with_acronyms(s) for s in pt_options if s])
     selected_pt_tc = st.radio(
-        f"{title_with_acronyms(PT_SERVICE)} – choose one",
-        pt_options_tc if pt_options_tc else ["(Not applicable)"], index=0, horizontal=True
+        "", pt_options_tc if pt_options_tc else ["(Not applicable)"], index=0, horizontal=True
     )
     if selected_pt_tc == "(Not applicable)": selected_pt_tc = None
 
     submit = st.form_submit_button("Generate Table")
 
-# ----- Persisted editor: main table only (EBF excluded), fees editable, include toggle -----
+# ---------- Editor / Tables ----------
 if submit:
     if not client_name.strip():
         st.error("Please enter Client Name.")
@@ -480,12 +542,14 @@ if submit:
             st.session_state["editor_active"] = True
 
 if st.session_state["editor_active"] and (not st.session_state["quote_df"].empty or not st.session_state["event_df"].empty):
-    st.success("Proposal ready. Edit fees or uncheck rows in the main table; totals update live. Event-based charges are listed separately and not included in totals.")
+    st.success("Edit annual fees below. Event-based charges are listed separately and not included in totals.")
+
+    # --- MAIN (Annual Fees) editable grid
     if not st.session_state["quote_df"].empty:
         edited = st.data_editor(
             st.session_state["quote_df"],
             use_container_width=True,
-            disabled=["Service","Details"],  # Fee is editable
+            disabled=["Service","Details"],  # Fee is editable; can also uncheck Include
             column_config={
                 "Include": st.column_config.CheckboxColumn(help="Uncheck to remove this row from the proposal/PDF."),
                 "Annual Fees (Rs.)": st.column_config.NumberColumn(
@@ -497,94 +561,120 @@ if st.session_state["editor_active"] and (not st.session_state["quote_df"].empty
             key="quote_editor",
         )
         st.session_state["quote_df"] = edited
-
         filtered = edited[edited["Include"] == True].drop(columns=["Include"])
         filtered["Annual Fees (Rs.)"] = pd.to_numeric(filtered["Annual Fees (Rs.)"], errors="coerce").fillna(0.0)
     else:
         filtered = pd.DataFrame(columns=["Service","Details","Annual Fees (Rs.)"])
 
-    # Event-based charges (read-only table)
+    # --- EVENT-BASED editable grid (fees editable, read-only columns otherwise; not included in totals)
     event_df = st.session_state["event_df"].copy()
     if not event_df.empty:
         st.subheader("Event-based charges (as applicable)")
         st.caption("These are not included in the annual fees totals.")
-        st.dataframe(event_df[["Details","Annual Fees (Rs.)"]], use_container_width=True)
+        event_edited = st.data_editor(
+            event_df,
+            use_container_width=True,
+            disabled=["Service","Details"],  # allow editing fee only
+            column_config={
+                "Annual Fees (Rs.)": st.column_config.NumberColumn(
+                    "Fees (Rs.)", min_value=0, step=100, format="%.0f",
+                    help="Edit the fee; shown in a separate section and not included in totals."
+                ),
+            },
+            num_rows="fixed",
+            key="event_editor",
+        )
+        event_edited["Annual Fees (Rs.)"] = pd.to_numeric(event_edited["Annual Fees (Rs.)"], errors="coerce").fillna(0.0)
+        st.session_state["event_df"] = event_edited
 
-    # Totals for MAIN table only
-    subtotal, discount_amt, taxable, gst_amt, grand = compute_totals(
-        filtered, st.session_state["discount_pct"]
-    )
-
+    # --- Totals for MAIN table only (UI shown in INR format)
+    subtotal, discount_amt, taxable, gst_amt, grand = compute_totals(filtered, st.session_state["discount_pct"])
     c1, c2, c3 = st.columns([1,1,1])
     with c1:
-        st.write(f"**Subtotal (Rs.):** {money(subtotal)}")
-        st.write(f"**Discount ({st.session_state['discount_pct']}%) (Rs.):** {money(discount_amt)}")
+        st.write(f"**Subtotal (Rs.):** {money_inr(subtotal)}")
+        st.write(f"**Discount ({st.session_state['discount_pct']}%) (Rs.):** {money_inr(discount_amt)}")
     with c2:
-        st.write(f"**Taxable Amount (Rs.):** {money(taxable)}")
-        st.write(f"**GST (18%) (Rs.):** {money(gst_amt)}")
+        st.write(f"**Taxable Amount (Rs.):** {money_inr(taxable)}")
+        st.write(f"**GST (18%) (Rs.):** {money_inr(gst_amt)}")
     with c3:
-        st.write(f"**Grand Total (Rs.):** {money(grand)}")
+        st.write(f"**Grand Total (Rs.):** {money_inr(grand)}")
         if st.button("Start Over"):
             st.session_state["editor_active"] = False
             st.session_state["quote_df"] = pd.DataFrame()
             st.session_state["event_df"] = pd.DataFrame()
             st.rerun()
 
-    # Exports
+    # --- Presets (save/load per Client Type)
+    with st.expander("Presets (reusable bundles)", expanded=False):
+        ct_key = normalize_str(st.session_state.get("client_type",""))
+        colP1, colP2 = st.columns([1,1])
+        with colP1:
+            preset_name = st.text_input("Preset name", "")
+            if st.button("Save preset"):
+                if preset_name.strip():
+                    st.session_state["presets"].setdefault(ct_key, {})
+                    st.session_state["presets"][ct_key][preset_name.strip()] = {
+                        "main": filtered.copy(),
+                        "event": st.session_state["event_df"].copy()
+                    }
+                    st.success(f"Saved preset '{preset_name.strip()}' for {st.session_state.get('client_type','')}.")
+                else:
+                    st.warning("Enter a preset name.")
+        with colP2:
+            existing = sorted(list(st.session_state["presets"].get(ct_key, {}).keys()))
+            sel = st.selectbox("Load preset", ["(none)"] + existing, index=0)
+            if st.button("Load"):
+                if sel != "(none)":
+                    payload = st.session_state["presets"][ct_key][sel]
+                    main_df = payload["main"].copy()
+                    main_df["Include"] = True  # ensure Include column exists
+                    st.session_state["quote_df"] = main_df
+                    st.session_state["event_df"] = payload.get("event", pd.DataFrame()).copy()
+                    st.session_state["editor_active"] = True
+                    st.success(f"Loaded preset '{sel}' for {st.session_state.get('client_type','')}.")
+
+    # --- Downloads (CSV removed; Excel + PDF only)
+    colA, colB = st.columns([1,1])
+    # Excel (Annual Fees)
     if not filtered.empty:
-        csv_bytes = filtered.to_csv(index=False).encode("utf-8")
         xlsx_buf = io.BytesIO()
         try:
             with pd.ExcelWriter(xlsx_buf, engine="openpyxl") as writer:
                 filtered.to_excel(writer, index=False, sheet_name="Annual Fees")
             xlsx_data = xlsx_buf.getvalue()
+            colA.download_button("⬇️ Download Excel (Annual Fees)", data=xlsx_data,
+                                 file_name="annual_fees_proposal.xlsx",
+                                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="dl_xlsx_main")
         except Exception:
-            xlsx_data = None
+            colA.caption(":grey[Excel export unavailable (missing engine).]")
 
-        colA, colB, colC = st.columns([1,1,1])
-        with colA:
-            st.download_button("⬇️ Download CSV (Annual Fees)", data=csv_bytes,
-                               file_name="annual_fees_proposal.csv", mime="text/csv", key="dl_csv_main")
-        with colB:
-            if xlsx_data:
-                st.download_button("⬇️ Download Excel (Annual Fees)", data=xlsx_data,
-                                   file_name="annual_fees_proposal.xlsx",
-                                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="dl_xlsx_main")
-            else:
-                st.caption(":grey[Excel export unavailable (missing engine).]")
+    # Excel (Event-based)
+    if not st.session_state["event_df"].empty:
+        ev_xlsx = io.BytesIO()
+        try:
+            with pd.ExcelWriter(ev_xlsx, engine="openpyxl") as writer:
+                st.session_state["event_df"].to_excel(writer, index=False, sheet_name="Event-based")
+            colB.download_button("⬇️ Download Excel (Event-based)", data=ev_xlsx.getvalue(),
+                                 file_name="event_based_charges.xlsx",
+                                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="dl_xlsx_event")
+        except Exception:
+            colB.caption(":grey[Excel export for event-based unavailable (missing engine).]")
 
-        # PDF (includes event table if present)
-        pdf_bytes = make_pdf(
-            st.session_state["client_name"], st.session_state["client_type"], st.session_state["quote_no"],
-            filtered, event_df, subtotal, float(st.session_state["discount_pct"]), discount_amt, gst_amt, grand,
-            letterhead=st.session_state["letterhead"],
-            addr=st.session_state.get("client_addr",""),
-            email=st.session_state.get("client_email",""),
-            phone=st.session_state.get("client_phone",""),
-            signature_bytes=st.session_state.get("sig_bytes")
-        )
-        with colC:
-            st.download_button(
-                "⬇️ Download PDF",
-                data=pdf_bytes,
-                file_name=f"Annual_Fees_Proposal_{st.session_state['client_name'].replace(' ', '_')}.pdf",
-                mime="application/pdf",
-                key="dl_pdf"
-            )
-
-    # Optional: separate export for Event-based table
-    if not event_df.empty:
-        colE1, colE2 = st.columns([1,1])
-        with colE1:
-            st.download_button("⬇️ Download CSV (Event-based)", data=event_df.to_csv(index=False).encode("utf-8"),
-                               file_name="event_based_charges.csv", mime="text/csv", key="dl_csv_event")
-        with colE2:
-            ev_xlsx = io.BytesIO()
-            try:
-                with pd.ExcelWriter(ev_xlsx, engine="openpyxl") as writer:
-                    event_df.to_excel(writer, index=False, sheet_name="Event-based")
-                st.download_button("⬇️ Download Excel (Event-based)", data=ev_xlsx.getvalue(),
-                                   file_name="event_based_charges.xlsx",
-                                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="dl_xlsx_event")
-            except Exception:
-                st.caption(":grey[Excel export for event-based unavailable (missing engine).]")
+    # PDF (includes event table + notes)
+    pdf_bytes = make_pdf(
+        st.session_state["client_name"], st.session_state["client_type"], st.session_state["quote_no"],
+        filtered, st.session_state["event_df"], subtotal, float(st.session_state["discount_pct"]),
+        discount_amt, gst_amt, grand,
+        letterhead=st.session_state["letterhead"],
+        addr=st.session_state.get("client_addr",""),
+        email=st.session_state.get("client_email",""),
+        phone=st.session_state.get("client_phone",""),
+        signature_bytes=st.session_state.get("sig_bytes")
+    )
+    st.download_button(
+        "⬇️ Download PDF",
+        data=pdf_bytes,
+        file_name=f"Annual_Fees_Proposal_{st.session_state['client_name'].replace(' ', '_')}.pdf",
+        mime="application/pdf",
+        key="dl_pdf"
+    )
