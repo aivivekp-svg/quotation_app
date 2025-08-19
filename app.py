@@ -11,7 +11,7 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.platypus import (
-    BaseDocTemplate, Frame, PageTemplate, Paragraph, Spacer, Table, TableStyle
+    BaseDocTemplate, Frame, PageTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
 )
 
 APP_TITLE = "Quotation Generator – V. Purohit & Associates"
@@ -25,6 +25,13 @@ ACCOUNTING_PLANS = ["Monthly Accounting", "Quarterly Accounting", "Half Yearly A
 
 EVENT_SERVICE = "EVENT BASED FILING"
 PT_SERVICE = "PROFESSION TAX RETURNS"
+
+# Force these SubServices to Event-based (by normalized/UPPER name)
+FORCE_EVENT_SUBS = {
+    "FILING OF TDS RETURN IN FORM 26QB",
+    "FILING OF TDS RETURN IN FORM 26QC",
+    "FILING OF TDS RETURN IN FORM 27Q",
+}
 
 ACRONYMS = ["GST", "GSTR", "PTEC", "PTRC", "ADT", "ROC", "TDS", "AOC", "MGT", "26QB", "26QC"]
 GST_RATE_FIXED = 18  # always 18%
@@ -45,7 +52,7 @@ _ss_set("letterhead", False)
 _ss_set("client_addr", "")
 _ss_set("client_email", "")
 _ss_set("client_phone", "")
-_ss_set("proposal_start", "")  # NEW
+_ss_set("proposal_start", "")
 _ss_set("sig_bytes", None)
 _ss_set("theme_choice", "Light")
 _ss_set("brand_color", "#0F4C81")
@@ -132,6 +139,12 @@ def build_quotes(client_name, client_type, df_app, df_fees,
             [main_app.loc[~is_pt], main_app.loc[is_pt & (main_app["SubService"] == sel_pt)]],
             ignore_index=True,
         )
+
+    # ---- Force selected SubServices into Event-based (26QB/26QC/27Q) ----
+    force_mask = main_app["SubService"].isin(FORCE_EVENT_SUBS)
+    if force_mask.any():
+        event_app = pd.concat([event_app, main_app.loc[force_mask]], ignore_index=True)
+        main_app = main_app.loc[~force_mask].copy()
 
     # Merge each with Fees and format labels
     def _merge_and_format(df_in: pd.DataFrame) -> pd.DataFrame:
@@ -295,12 +308,11 @@ def make_pdf(client_name: str, client_type: str, quote_no: str,
     left_cells.append(Paragraph(f"<b>Client Name:</b> {client_name}", styles["Normal"]))
     left_cells.append(Paragraph(f"<b>Client Entity Type:</b> {client_type}", styles["Normal"]))
 
-    # Address (multi-line)
+    # Address / Email / Phone (optional)
     addr_html = ""
     if addr and addr.strip():
         addr_html = "<br/>".join([ln.strip() for ln in addr.splitlines() if ln.strip()])
         left_cells.append(Paragraph(f"<b>Address:</b> {addr_html}", styles["Normal"]))
-    # Email / Phone (optional)
     if email and email.strip():
         left_cells.append(Paragraph(f"<b>Email:</b> {email.strip()}", styles["Normal"]))
     if phone and phone.strip():
@@ -312,7 +324,6 @@ def make_pdf(client_name: str, client_type: str, quote_no: str,
     if proposal_start and str(proposal_start).strip():
         right_cells.append(Paragraph(f"<b>Proposed Start:</b> {proposal_start.strip()}", styles["Normal"]))
 
-    # Make rows equal
     rows_n = max(len(left_cells), len(right_cells))
     while len(left_cells) < rows_n:
         left_cells.append(Paragraph("&nbsp;", styles["Normal"]))
@@ -396,8 +407,9 @@ def make_pdf(client_name: str, client_type: str, quote_no: str,
     story.append(Paragraph(notes, styles["Normal"]))
     story.append(Spacer(1, 10))
 
-    # EVENT-BASED TABLE (brand-blue header)
+    # ---- EVENT-BASED TABLE on a NEW PAGE ----
     if not df_event.empty:
+        story.append(PageBreak())
         story.append(Paragraph("<b>Event-based charges (as applicable, not included in annual fees)</b>", styles["Normal"]))
         story.append(Spacer(1, 4))
         ev_rows = build_event_pdf_rows(df_event)
@@ -498,7 +510,7 @@ with st.sidebar:
             st.warning("Some fees are missing/zero. Review below.")
             st.dataframe(status_df, use_container_width=True)
 
-# ---------- THEME CSS (minimal & safe for icons) ----------
+# ---------- THEME CSS ----------
 theme_choice = st.session_state["theme_choice"]
 brand_color = st.session_state["brand_color"]
 
@@ -547,7 +559,7 @@ with st.form("quote_form", clear_on_submit=False):
     with colY:
         phone = st.text_input("", st.session_state.get("client_phone", ""), placeholder="Phone")
 
-    # NEW: Proposed Start (optional free text)
+    # Proposed Start (optional free text)
     st.markdown('<div class="label-lg">➤ Proposed Start (optional)</div>', unsafe_allow_html=True)
     proposal_start = st.text_input("", st.session_state.get("proposal_start", ""),
                                    placeholder="e.g., Aug 2025 / FY 2025-26")
@@ -584,6 +596,7 @@ if submit:
         else:
             df_main = main_df.copy()
             df_main["Include"] = True
+            df_main["MoveToEvent"] = False  # UI flag to move rows
             st.session_state["quote_df"] = df_main
             st.session_state["event_df"] = event_df.copy()
             st.session_state["client_name"] = client_name
@@ -598,7 +611,7 @@ if st.session_state["editor_active"] and (
 ):
     st.success("Edit annual fees below. Event-based charges are listed separately and not included in totals.")
 
-    # Main table editor
+    # Main table editor (add 'Move to Event' control)
     if not st.session_state["quote_df"].empty:
         edited = st.data_editor(
             st.session_state["quote_df"],
@@ -606,6 +619,7 @@ if st.session_state["editor_active"] and (
             disabled=["Service", "Details"],
             column_config={
                 "Include": st.column_config.CheckboxColumn(help="Uncheck to remove this row from the proposal/PDF."),
+                "MoveToEvent": st.column_config.CheckboxColumn(help="Tick and click 'Apply moves' to shift to Event-based table."),
                 "Annual Fees (Rs.)": st.column_config.NumberColumn(
                     "Annual Fees (Rs.)", min_value=0, step=100, format="%.0f",
                     help="Edit the fee; totals & PDF will use this value."
@@ -615,12 +629,29 @@ if st.session_state["editor_active"] and (
             key="quote_editor",
         )
         st.session_state["quote_df"] = edited
-        filtered = edited[edited["Include"] == True].drop(columns=["Include"])
+
+        # Apply moves button
+        move_rows = edited[edited["MoveToEvent"] == True].copy()
+        if st.button("Apply moves to Event-based"):
+            if not move_rows.empty:
+                # Append to event_df
+                addon = move_rows[["Service", "Details", "Annual Fees (Rs.)"]].copy()
+                st.session_state["event_df"] = pd.concat([st.session_state["event_df"], addon], ignore_index=True)
+                # Remove from main
+                keep = edited["MoveToEvent"] != True
+                kept = edited.loc[keep].copy()
+                kept["MoveToEvent"] = False
+                st.session_state["quote_df"] = kept
+                st.success(f"Moved {len(addon)} row(s) to Event-based.")
+            else:
+                st.info("No rows selected to move.")
+
+        filtered = st.session_state["quote_df"][st.session_state["quote_df"]["Include"] == True].drop(columns=["Include", "MoveToEvent"])
         filtered["Annual Fees (Rs.)"] = pd.to_numeric(filtered["Annual Fees (Rs.)"], errors="coerce").fillna(0.0)
     else:
         filtered = pd.DataFrame(columns=["Service", "Details", "Annual Fees (Rs.)"])
 
-    # Event-based editor
+    # Event-based editor (fees editable; not included in totals)
     event_df = st.session_state["event_df"].copy()
     if not event_df.empty:
         st.subheader("Event-based charges (as applicable)")
@@ -690,11 +721,11 @@ if st.session_state["editor_active"] and (
         except Exception:
             colB.caption(":grey[Excel export for event-based unavailable (missing engine).]")
 
-    # PDF (includes event table + notes)
+    # PDF (includes event table on a new page)
     pdf_bytes = make_pdf(
         st.session_state["client_name"],
         st.session_state["client_type"],
-        st.session_state["quote_no"],
+        datetime.now().strftime("QTN-%Y%m%d-%H%M%S") if not st.session_state.get("quote_no") else st.session_state["quote_no"],
         filtered,
         st.session_state["event_df"],
         subtotal,
