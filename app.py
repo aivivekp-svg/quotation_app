@@ -45,6 +45,7 @@ _ss_set("letterhead", False)
 _ss_set("client_addr", "")
 _ss_set("client_email", "")
 _ss_set("client_phone", "")
+_ss_set("proposal_start", "")  # NEW
 _ss_set("sig_bytes", None)
 _ss_set("theme_choice", "Light")
 _ss_set("brand_color", "#0F4C81")
@@ -163,25 +164,26 @@ def compute_totals(df_selected: pd.DataFrame, discount_pct: float):
     grand = round(taxable + gst_amt, 2)
     return subtotal, discount_amt, taxable, gst_amt, grand
 
-# ---------- PDF helpers ----------
-def build_grouped_pdf_rows(df: pd.DataFrame):
+# ---------- PDF: compact grouping ----------
+def build_grouped_pdf_rows_compact(df: pd.DataFrame):
+    """
+    If a service has zero/one sub-service -> one row (Service | Details | Fee).
+    If multiple sub-services -> put Service only on the first row.
+    """
     rows = [["Service", "Details", "Annual Fees<br/>(Rs.)"]]
-    styles = []
-    r = 1
     for svc, grp in df.groupby("Service", sort=True):
-        rows.append([svc, "", ""])
-        styles.extend([
-            ("BACKGROUND", (0, r), (-1, r), colors.HexColor("#f7f7f7")),
-            ("FONTNAME", (0, r), (-1, r), "Helvetica-Bold"),
-            ("ALIGN", (0, r), (-1, r), "LEFT"),
-        ])
-        r += 1
-        for _, row in grp.iterrows():
-            amt = pd.to_numeric(row["Annual Fees (Rs.)"], errors="coerce")
-            amt = 0.0 if pd.isna(amt) else float(amt)
-            rows.append(["", row["Details"], money_inr(amt)])
-            r += 1
-    return rows, styles
+        g = grp.copy()
+        g["amt"] = pd.to_numeric(g["Annual Fees (Rs.)"], errors="coerce").fillna(0.0)
+        g = g.sort_values(["Details"])
+        if len(g) <= 1:
+            r = g.iloc[0]
+            rows.append([svc, r["Details"], money_inr(r["amt"])])
+        else:
+            first = True
+            for _, r in g.iterrows():
+                rows.append([svc if first else "", r["Details"], money_inr(r["amt"])])
+                first = False
+    return rows
 
 def build_event_pdf_rows(df: pd.DataFrame):
     rows = [["Details", "Fees<br/>(Rs.)"]]
@@ -195,35 +197,32 @@ def make_pdf(client_name: str, client_type: str, quote_no: str,
              df_quote: pd.DataFrame, df_event: pd.DataFrame,
              subtotal: float, discount_pct: float, discount_amt: float, gst_amt: float, grand: float,
              letterhead: bool = False, addr: Optional[str] = None, email: Optional[str] = None,
-             phone: Optional[str] = None, signature_bytes: Optional[bytes] = None):
+             phone: Optional[str] = None, proposal_start: Optional[str] = None,
+             signature_bytes: Optional[bytes] = None):
     import os
     from reportlab.platypus import Image
     from reportlab.lib.utils import ImageReader
 
     buf = io.BytesIO()
 
-    # Build a PageTemplate so background (tint + white card + optional watermark)
-    # is drawn BEFORE content; footer is drawn AFTER content.
+    # Background & card via PageTemplate
     left, right, top, bottom = 18*mm, 18*mm, 16*mm, 16*mm
     card_inset = 10*mm
     brand_blue = colors.HexColor("#0F4C81")
 
     def on_page(canv, doc_):
         pw, ph = A4
-        # Page tint
         canv.saveState()
         canv.setFillColor(colors.HexColor("#F7F9FC"))
         canv.rect(0, 0, pw, ph, stroke=0, fill=1)
-        # White content card with border
-        x = card_inset
-        y = card_inset
-        w = pw - 2*card_inset
-        h = ph - 2*card_inset
+        # white card
+        x = card_inset; y = card_inset
+        w = pw - 2*card_inset; h = ph - 2*card_inset
         canv.setFillColor(colors.white)
         canv.setStrokeColor(colors.HexColor("#E5E7EB"))
         canv.setLineWidth(1)
         canv.rect(x, y, w, h, stroke=1, fill=1)
-        # Optional watermark (letterhead logo) — draw very light under content
+        # optional faint logo watermark
         if letterhead:
             try:
                 for n in ("logo.png", "logo.jpg", "logo.jpeg"):
@@ -247,7 +246,7 @@ def make_pdf(client_name: str, client_type: str, quote_no: str,
         canv.restoreState()
 
     def on_page_end(canv, doc_):
-        # Footer lines/text
+        # footer
         canv.saveState()
         canv.setFont("Helvetica", 8)
         y_line = 20*mm
@@ -270,7 +269,7 @@ def make_pdf(client_name: str, client_type: str, quote_no: str,
     head_center = ParagraphStyle("HeadCenter", parent=styles["Normal"], alignment=TA_CENTER, fontName="Helvetica-Bold")
     story = []
 
-    # Small logo (when not using watermark mode)
+    # Small logo when not using watermark
     def find_logo_path():
         for name in ("logo.png", "logo.jpg", "logo.jpeg"):
             if os.path.exists(name):
@@ -279,8 +278,7 @@ def make_pdf(client_name: str, client_type: str, quote_no: str,
 
     logo_path = find_logo_path()
     if logo_path and not letterhead:
-        ir = ImageReader(logo_path)
-        ow, oh = ir.getSize()
+        ir = ImageReader(logo_path); ow, oh = ir.getSize()
         max_w, max_h = 26*mm, 26*mm
         r = min(max_w/ow, max_h/oh)
         story.append(Image(logo_path, width=ow*r, height=oh*r))
@@ -291,31 +289,57 @@ def make_pdf(client_name: str, client_type: str, quote_no: str,
     story.append(Paragraph("<b>Annual Fees Proposal</b>", styles["h2"]))
     story.append(Spacer(1, 6))
 
-    # Meta info
-    meta_lines = [
-        f"<b>Client Name:</b> {client_name}",
-        f"<b>Client Type:</b> {client_type}",
-        f"<b>Quotation No.:</b> {quote_no}",
-        f"<b>Date:</b> {datetime.now().strftime('%d-%b-%Y')}",
-    ]
+    # --- Header block: 2-column meta table ---
+    left_cells = []
+    right_cells = []
+    left_cells.append(Paragraph(f"<b>Client Name:</b> {client_name}", styles["Normal"]))
+    left_cells.append(Paragraph(f"<b>Client Entity Type:</b> {client_type}", styles["Normal"]))
+
+    # Address (multi-line)
+    addr_html = ""
     if addr and addr.strip():
         addr_html = "<br/>".join([ln.strip() for ln in addr.splitlines() if ln.strip()])
-        meta_lines.append(f"<b>Address:</b> {addr_html}")
+        left_cells.append(Paragraph(f"<b>Address:</b> {addr_html}", styles["Normal"]))
+    # Email / Phone (optional)
     if email and email.strip():
-        meta_lines.append(f"<b>Email:</b> {email.strip()}")
+        left_cells.append(Paragraph(f"<b>Email:</b> {email.strip()}", styles["Normal"]))
     if phone and phone.strip():
-        meta_lines.append(f"<b>Phone:</b> {phone.strip()}")
-    story.append(Paragraph("<br/>".join(meta_lines), styles["Normal"]))
+        left_cells.append(Paragraph(f"<b>Phone:</b> {phone.strip()}", styles["Normal"]))
+
+    # Right column: Quotation No., Date, Proposed Start (if any)
+    right_cells.append(Paragraph(f"<b>Quotation No.:</b> {quote_no}", styles["Normal"]))
+    right_cells.append(Paragraph(f"<b>Date:</b> {datetime.now().strftime('%d-%b-%Y')}", styles["Normal"]))
+    if proposal_start and str(proposal_start).strip():
+        right_cells.append(Paragraph(f"<b>Proposed Start:</b> {proposal_start.strip()}", styles["Normal"]))
+
+    # Make rows equal
+    rows_n = max(len(left_cells), len(right_cells))
+    while len(left_cells) < rows_n:
+        left_cells.append(Paragraph("&nbsp;", styles["Normal"]))
+    while len(right_cells) < rows_n:
+        right_cells.append(Paragraph("&nbsp;", styles["Normal"]))
+
+    meta_table = Table([[left_cells[i], right_cells[i]] for i in range(rows_n)],
+                       colWidths=[110*mm, 60*mm])
+    meta_table.setStyle(TableStyle([
+        ("VALIGN", (0,0), (-1,-1), "TOP"),
+        ("LEFTPADDING", (0,0), (-1,-1), 0),
+        ("RIGHTPADDING", (0,0), (-1,-1), 0),
+        ("BOTTOMPADDING", (0,0), (-1,-1), 2),
+        ("TOPPADDING", (0,0), (-1,-1), 2),
+    ]))
+    story.append(meta_table)
     story.append(Spacer(1, 8))
 
-    # MAIN TABLE (brand-blue header)
-    table_rows, extra_styles = build_grouped_pdf_rows(df_quote)
+    # MAIN TABLE (brand-blue header) with compact grouping
+    table_rows = build_grouped_pdf_rows_compact(df_quote)
     table_rows[0] = [
         Paragraph("<b>Service</b>", head_center),
         Paragraph("<b>Details</b>", head_center),
         Paragraph("<b>Annual Fees</b><br/><b>(Rs.)</b>", head_center),
     ]
     col_widths = [60*mm, 80*mm, 30*mm]  # total 170mm < frame width (174mm)
+    brand_blue = colors.HexColor("#0F4C81")
     table = Table(table_rows, colWidths=col_widths, repeatRows=1)
     table.setStyle(TableStyle(
         [
@@ -334,7 +358,7 @@ def make_pdf(client_name: str, client_type: str, quote_no: str,
             ("ALIGN", (2,1), (2,-1), "RIGHT"),
             ("INNERGRID", (0,1), (-1,-1), 0.3, colors.HexColor("#d9d9d9")),
             ("BOX", (0,0), (-1,-1), 1.0, colors.black),
-        ] + extra_styles
+        ]
     ))
     story.append(table)
     story.append(Spacer(1, 8))
@@ -523,6 +547,11 @@ with st.form("quote_form", clear_on_submit=False):
     with colY:
         phone = st.text_input("", st.session_state.get("client_phone", ""), placeholder="Phone")
 
+    # NEW: Proposed Start (optional free text)
+    st.markdown('<div class="label-lg">➤ Proposed Start (optional)</div>', unsafe_allow_html=True)
+    proposal_start = st.text_input("", st.session_state.get("proposal_start", ""),
+                                   placeholder="e.g., Aug 2025 / FY 2025-26")
+
     ct_norm = normalize_str(client_type)
     app_ct = df_app[(df_app["ClientType"] == ct_norm) & (df_app["Applicable"] == True)]
 
@@ -544,6 +573,7 @@ if submit:
         st.error("Please enter Client Name.")
     else:
         st.session_state["quote_no"] = datetime.now().strftime("QTN-%Y%m%d-%H%M%S")
+        st.session_state["proposal_start"] = proposal_start
         main_df, event_df, _ = build_quotes(
             client_name, client_type, df_app, df_fees,
             selected_accounting=selected_accounting,
@@ -676,6 +706,7 @@ if st.session_state["editor_active"] and (
         addr=st.session_state.get("client_addr", ""),
         email=st.session_state.get("client_email", ""),
         phone=st.session_state.get("client_phone", ""),
+        proposal_start=st.session_state.get("proposal_start", ""),
         signature_bytes=st.session_state.get("sig_bytes"),
     )
     st.download_button(
