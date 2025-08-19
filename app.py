@@ -33,7 +33,16 @@ FORCE_EVENT_SUBS = {
     "FILING OF TDS RETURN IN FORM 27Q",
 }
 
-ACRONYMS = ["GST", "GSTR", "PTEC", "PTRC", "ADT", "ROC", "TDS", "AOC", "MGT", "26QB", "26QC"]
+# NEW: display fixes
+ACRONYMS = ["GST", "GSTR", "PTEC", "PTRC", "ADT", "ROC", "TDS", "AOC", "MGT", "26QB", "26QC", "DIR", "MSME", "KYC"]
+SUBSERVICE_RENAMES = {
+    "CHANGE OF ADDRESS IN GST": "GST Amendment",
+    # Others rely on ACRONYMS uppercasing:
+    "DIR 12": "DIR 12",
+    "MSME APPLICATION": "MSME Application",
+    "ROC E-KYC FOR DIRECTORS": "ROC E-KYC For Directors",
+}
+
 GST_RATE_FIXED = 18  # always 18%
 
 # ---------- Session defaults ----------
@@ -69,6 +78,12 @@ def title_with_acronyms(text: str) -> str:
     for token in ACRONYMS:
         t = re.sub(rf"\b{re.escape(token)}\b", token, t, flags=re.IGNORECASE)
     return t
+
+def subservice_display_override(raw_upper: str, pretty: str) -> str:
+    # Exact overrides
+    if raw_upper in SUBSERVICE_RENAMES:
+        return SUBSERVICE_RENAMES[raw_upper]
+    return pretty
 
 def service_display_override(raw_upper: str, pretty: str) -> str:
     if raw_upper == "FILING OF GSTR RETURNS":
@@ -155,7 +170,10 @@ def build_quotes(client_name, client_type, df_app, df_fees,
         service_key_upper = q["Service"].copy()
         svc_pretty = service_key_upper.map(title_with_acronyms)
         q["Service"] = [service_display_override(raw, pretty) for raw, pretty in zip(service_key_upper.tolist(), svc_pretty.tolist())]
-        q["SubService"] = q["SubService"].map(title_with_acronyms)
+        # SubService pretty + overrides
+        raw_sub_upper = q["SubService"].copy()
+        sub_pretty = raw_sub_upper.map(title_with_acronyms)
+        q["SubService"] = [subservice_display_override(raw, pretty) for raw, pretty in zip(raw_sub_upper.tolist(), sub_pretty.tolist())]
         q.sort_values(["Service", "SubService"], inplace=True)
         return (
             q.drop(columns=["ClientType"], errors="ignore")
@@ -203,7 +221,9 @@ def build_event_pdf_rows(df: pd.DataFrame):
     for _, row in df.iterrows():
         amt = pd.to_numeric(row["Annual Fees (Rs.)"], errors="coerce")
         amt = 0.0 if pd.isna(amt) else float(amt)
-        rows.append([row["Details"], money_inr(amt)])
+        # If Details is blank, fall back to Service name
+        detail = (str(row.get("Details", "")).strip() or str(row.get("Service", "")).strip())
+        rows.append([detail, money_inr(amt)])
     return rows
 
 def make_pdf(client_name: str, client_type: str, quote_no: str,
@@ -596,7 +616,7 @@ if submit:
         else:
             df_main = main_df.copy()
             df_main["Include"] = True
-            df_main["MoveToEvent"] = False  # UI flag to move rows
+            df_main["MoveToEvent"] = False  # NEW
             st.session_state["quote_df"] = df_main
             st.session_state["event_df"] = event_df.copy()
             st.session_state["client_name"] = client_name
@@ -611,66 +631,83 @@ if st.session_state["editor_active"] and (
 ):
     st.success("Edit annual fees below. Event-based charges are listed separately and not included in totals.")
 
-    # Main table editor (add 'Move to Event' control)
+    # ---- Main table editor (inside a FORM to avoid per-click reruns) ----
     if not st.session_state["quote_df"].empty:
-        edited = st.data_editor(
-            st.session_state["quote_df"],
-            use_container_width=True,
-            disabled=["Service", "Details"],
-            column_config={
-                "Include": st.column_config.CheckboxColumn(help="Uncheck to remove this row from the proposal/PDF."),
-                "MoveToEvent": st.column_config.CheckboxColumn(help="Tick and click 'Apply moves' to shift to Event-based table."),
-                "Annual Fees (Rs.)": st.column_config.NumberColumn(
-                    "Annual Fees (Rs.)", min_value=0, step=100, format="%.0f",
-                    help="Edit the fee; totals & PDF will use this value."
-                ),
-            },
-            num_rows="fixed",
-            key="quote_editor",
-        )
-        st.session_state["quote_df"] = edited
+        with st.form("edit_main"):
+            edited = st.data_editor(
+                st.session_state["quote_df"],
+                use_container_width=True,
+                disabled=["Service", "Details"],
+                column_order=["Include", "MoveToEvent", "Service", "Details", "Annual Fees (Rs.)"],
+                column_config={
+                    "Include": st.column_config.CheckboxColumn(help="Uncheck to remove this row from the proposal/PDF."),
+                    "MoveToEvent": st.column_config.CheckboxColumn(help="Tick and submit to shift to Event-based table."),
+                    "Annual Fees (Rs.)": st.column_config.NumberColumn(
+                        "Annual Fees (Rs.)", min_value=0, step=100, format="%.0f",
+                        help="Edit the fee; totals & PDF will use this value."
+                    ),
+                },
+                num_rows="fixed",
+                key="quote_editor",
+                hide_index=True,
+                height=420,
+            )
+            col_m1, col_m2 = st.columns([1,1])
+            apply_edits = col_m1.form_submit_button("Apply edits")
+            apply_and_move = col_m2.form_submit_button("Apply edits & move selected")
+        if apply_edits or apply_and_move:
+            st.session_state["quote_df"] = edited
+            if apply_and_move:
+                move_rows = edited[edited["MoveToEvent"] == True].copy()
+                if not move_rows.empty:
+                    addon = move_rows[["Service", "Details", "Annual Fees (Rs.)"]].copy()
+                    # If Details blank, use Service name
+                    addon["Details"] = addon["Details"].apply(lambda x: x.strip() if isinstance(x, str) else "")
+                    addon.loc[addon["Details"] == "", "Details"] = addon["Service"]
+                    st.session_state["event_df"] = pd.concat([st.session_state["event_df"], addon], ignore_index=True)
+                    kept = edited.loc[edited["MoveToEvent"] != True].copy()
+                    kept["MoveToEvent"] = False
+                    st.session_state["quote_df"] = kept
+                    st.success(f"Moved {len(addon)} row(s) to Event-based.")
 
-        # Apply moves button
-        move_rows = edited[edited["MoveToEvent"] == True].copy()
-        if st.button("Apply moves to Event-based"):
-            if not move_rows.empty:
-                # Append to event_df
-                addon = move_rows[["Service", "Details", "Annual Fees (Rs.)"]].copy()
-                st.session_state["event_df"] = pd.concat([st.session_state["event_df"], addon], ignore_index=True)
-                # Remove from main
-                keep = edited["MoveToEvent"] != True
-                kept = edited.loc[keep].copy()
-                kept["MoveToEvent"] = False
-                st.session_state["quote_df"] = kept
-                st.success(f"Moved {len(addon)} row(s) to Event-based.")
-            else:
-                st.info("No rows selected to move.")
-
-        filtered = st.session_state["quote_df"][st.session_state["quote_df"]["Include"] == True].drop(columns=["Include", "MoveToEvent"])
+        # Compute filtered AFTER possible updates
+        qdf = st.session_state["quote_df"]
+        if "Include" in qdf.columns:
+            filtered = qdf[qdf["Include"] == True].copy()
+        else:
+            filtered = qdf.copy()
+        for col in ["Include", "MoveToEvent"]:
+            if col in filtered.columns:
+                filtered.drop(columns=[col], inplace=True)
         filtered["Annual Fees (Rs.)"] = pd.to_numeric(filtered["Annual Fees (Rs.)"], errors="coerce").fillna(0.0)
     else:
         filtered = pd.DataFrame(columns=["Service", "Details", "Annual Fees (Rs.)"])
 
-    # Event-based editor (fees editable; not included in totals)
+    # ---- Event-based editor (also in a form) ----
     event_df = st.session_state["event_df"].copy()
     if not event_df.empty:
         st.subheader("Event-based charges (as applicable)")
         st.caption("These are not included in the annual fees totals.")
-        event_edited = st.data_editor(
-            event_df,
-            use_container_width=True,
-            disabled=["Service", "Details"],
-            column_config={
-                "Annual Fees (Rs.)": st.column_config.NumberColumn(
-                    "Fees (Rs.)", min_value=0, step=100, format="%.0f",
-                    help="Edit the fee; shown separately and not included in totals."
-                ),
-            },
-            num_rows="fixed",
-            key="event_editor",
-        )
-        event_edited["Annual Fees (Rs.)"] = pd.to_numeric(event_edited["Annual Fees (Rs.)"], errors="coerce").fillna(0.0)
-        st.session_state["event_df"] = event_edited
+        with st.form("event_form"):
+            event_edited = st.data_editor(
+                event_df,
+                use_container_width=True,
+                disabled=["Service", "Details"],
+                column_order=["Service", "Details", "Annual Fees (Rs.)"],
+                column_config={
+                    "Annual Fees (Rs.)": st.column_config.NumberColumn(
+                        "Fees (Rs.)", min_value=0, step=100, format="%.0f",
+                        help="Edit the fee; shown separately and not included in totals."
+                    ),
+                },
+                num_rows="fixed",
+                key="event_editor",
+                hide_index=True,
+                height=320,
+            )
+            ev_apply = st.form_submit_button("Apply event edits")
+        if ev_apply:
+            st.session_state["event_df"] = event_edited
 
     # Totals (UI)
     subtotal, discount_amt, taxable, gst_amt, grand = compute_totals(filtered, st.session_state["discount_pct"])
