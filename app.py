@@ -33,17 +33,17 @@ FORCE_EVENT_SUBS = {
     "FILING OF TDS RETURN IN FORM 27Q",
 }
 
-# NEW: display fixes
+# Display fixes
 ACRONYMS = ["GST", "GSTR", "PTEC", "PTRC", "ADT", "ROC", "TDS", "AOC", "MGT", "26QB", "26QC", "DIR", "MSME", "KYC"]
 SUBSERVICE_RENAMES = {
     "CHANGE OF ADDRESS IN GST": "GST Amendment",
-    # Others rely on ACRONYMS uppercasing:
     "DIR 12": "DIR 12",
     "MSME APPLICATION": "MSME Application",
     "ROC E-KYC FOR DIRECTORS": "ROC E-KYC For Directors",
 }
 
 GST_RATE_FIXED = 18  # always 18%
+BRAND_BLUE_HEX = "#0F4C81"
 
 # ---------- Session defaults ----------
 def _ss_set(k, v):
@@ -63,8 +63,6 @@ _ss_set("client_email", "")
 _ss_set("client_phone", "")
 _ss_set("proposal_start", "")
 _ss_set("sig_bytes", None)
-_ss_set("theme_choice", "Light")
-_ss_set("brand_color", "#0F4C81")
 
 # ---------- Helpers ----------
 def normalize_str(x):
@@ -80,7 +78,6 @@ def title_with_acronyms(text: str) -> str:
     return t
 
 def subservice_display_override(raw_upper: str, pretty: str) -> str:
-    # Exact overrides
     if raw_upper in SUBSERVICE_RENAMES:
         return SUBSERVICE_RENAMES[raw_upper]
     return pretty
@@ -111,7 +108,7 @@ def money_inr(n: float) -> str:
     return "-" + res if neg else res
 
 def load_matrices():
-    xl = pd.ExcelFile("matrices.xlsx")  # from repo
+    xl = pd.ExcelFile("matrices.xlsx")
     df_app = xl.parse("Applicability").fillna("")
     df_fees = xl.parse("Fees").fillna("")
     for df in (df_app, df_fees):
@@ -155,13 +152,13 @@ def build_quotes(client_name, client_type, df_app, df_fees,
             ignore_index=True,
         )
 
-    # ---- Force selected SubServices into Event-based (26QB/26QC/27Q) ----
+    # Force selected SubServices into Event-based
     force_mask = main_app["SubService"].isin(FORCE_EVENT_SUBS)
     if force_mask.any():
         event_app = pd.concat([event_app, main_app.loc[force_mask]], ignore_index=True)
         main_app = main_app.loc[~force_mask].copy()
 
-    # Merge each with Fees and format labels
+    # Merge + format
     def _merge_and_format(df_in: pd.DataFrame) -> pd.DataFrame:
         if df_in.empty:
             return pd.DataFrame(columns=["Service", "Details", "Annual Fees (Rs.)"])
@@ -170,7 +167,6 @@ def build_quotes(client_name, client_type, df_app, df_fees,
         service_key_upper = q["Service"].copy()
         svc_pretty = service_key_upper.map(title_with_acronyms)
         q["Service"] = [service_display_override(raw, pretty) for raw, pretty in zip(service_key_upper.tolist(), svc_pretty.tolist())]
-        # SubService pretty + overrides
         raw_sub_upper = q["SubService"].copy()
         sub_pretty = raw_sub_upper.map(title_with_acronyms)
         q["SubService"] = [subservice_display_override(raw, pretty) for raw, pretty in zip(raw_sub_upper.tolist(), sub_pretty.tolist())]
@@ -195,12 +191,8 @@ def compute_totals(df_selected: pd.DataFrame, discount_pct: float):
     grand = round(taxable + gst_amt, 2)
     return subtotal, discount_amt, taxable, gst_amt, grand
 
-# ---------- PDF: compact grouping ----------
+# ---------- PDF helpers ----------
 def build_grouped_pdf_rows_compact(df: pd.DataFrame):
-    """
-    If a service has zero/one sub-service -> one row (Service | Details | Fee).
-    If multiple sub-services -> put Service only on the first row.
-    """
     rows = [["Service", "Details", "Annual Fees<br/>(Rs.)"]]
     for svc, grp in df.groupby("Service", sort=True):
         g = grp.copy()
@@ -221,7 +213,6 @@ def build_event_pdf_rows(df: pd.DataFrame):
     for _, row in df.iterrows():
         amt = pd.to_numeric(row["Annual Fees (Rs.)"], errors="coerce")
         amt = 0.0 if pd.isna(amt) else float(amt)
-        # If Details is blank, fall back to Service name
         detail = (str(row.get("Details", "")).strip() or str(row.get("Service", "")).strip())
         rows.append([detail, money_inr(amt)])
     return rows
@@ -241,7 +232,7 @@ def make_pdf(client_name: str, client_type: str, quote_no: str,
     # Background & card via PageTemplate
     left, right, top, bottom = 18*mm, 18*mm, 16*mm, 16*mm
     card_inset = 10*mm
-    brand_blue = colors.HexColor("#0F4C81")
+    brand_blue = colors.HexColor(BRAND_BLUE_HEX)
 
     def on_page(canv, doc_):
         pw, ph = A4
@@ -327,7 +318,6 @@ def make_pdf(client_name: str, client_type: str, quote_no: str,
     right_cells = []
     left_cells.append(Paragraph(f"<b>Client Name:</b> {client_name}", styles["Normal"]))
     left_cells.append(Paragraph(f"<b>Client Entity Type:</b> {client_type}", styles["Normal"]))
-
     # Address / Email / Phone (optional)
     addr_html = ""
     if addr and addr.strip():
@@ -337,21 +327,17 @@ def make_pdf(client_name: str, client_type: str, quote_no: str,
         left_cells.append(Paragraph(f"<b>Email:</b> {email.strip()}", styles["Normal"]))
     if phone and phone.strip():
         left_cells.append(Paragraph(f"<b>Phone:</b> {phone.strip()}", styles["Normal"]))
-
     # Right column: Quotation No., Date, Proposed Start (if any)
     right_cells.append(Paragraph(f"<b>Quotation No.:</b> {quote_no}", styles["Normal"]))
     right_cells.append(Paragraph(f"<b>Date:</b> {datetime.now().strftime('%d-%b-%Y')}", styles["Normal"]))
     if proposal_start and str(proposal_start).strip():
         right_cells.append(Paragraph(f"<b>Proposed Start:</b> {proposal_start.strip()}", styles["Normal"]))
-
     rows_n = max(len(left_cells), len(right_cells))
     while len(left_cells) < rows_n:
         left_cells.append(Paragraph("&nbsp;", styles["Normal"]))
     while len(right_cells) < rows_n:
         right_cells.append(Paragraph("&nbsp;", styles["Normal"]))
-
-    meta_table = Table([[left_cells[i], right_cells[i]] for i in range(rows_n)],
-                       colWidths=[110*mm, 60*mm])
+    meta_table = Table([[left_cells[i], right_cells[i]] for i in range(rows_n)], colWidths=[110*mm, 60*mm])
     meta_table.setStyle(TableStyle([
         ("VALIGN", (0,0), (-1,-1), "TOP"),
         ("LEFTPADDING", (0,0), (-1,-1), 0),
@@ -369,8 +355,8 @@ def make_pdf(client_name: str, client_type: str, quote_no: str,
         Paragraph("<b>Details</b>", head_center),
         Paragraph("<b>Annual Fees</b><br/><b>(Rs.)</b>", head_center),
     ]
-    col_widths = [60*mm, 80*mm, 30*mm]  # total 170mm < frame width (174mm)
-    brand_blue = colors.HexColor("#0F4C81")
+    col_widths = [60*mm, 80*mm, 30*mm]
+    brand_blue = colors.HexColor(BRAND_BLUE_HEX)
     table = Table(table_rows, colWidths=col_widths, repeatRows=1)
     table.setStyle(TableStyle(
         [
@@ -419,14 +405,15 @@ def make_pdf(client_name: str, client_type: str, quote_no: str,
     # Notes
     notes = (
         "<b>Note:</b><br/>"
-        "1. Does not include Government fees and out-of-pocket expenses.<br/>"
-        "2. Our scope is limited to the services listed above.<br/>"
-        "3. The above quotation is valid for a period of 30 days."
+        "1. The fees are exclusive of taxes and out-of-pocket expenses.<br/>"
+        "2. GST 18% extra.<br/>"
+        "3. Our scope is limited to the services listed above.<br/>"
+        "4. The above quotation is valid for a period of 30 days."
     )
     story.append(Paragraph(notes, styles["Normal"]))
     story.append(Spacer(1, 10))
 
-    # ---- EVENT-BASED TABLE on a NEW PAGE ----
+    # EVENT-BASED TABLE on NEW PAGE
     if not df_event.empty:
         story.append(PageBreak())
         story.append(Paragraph("<b>Event-based charges (as applicable, not included in annual fees)</b>", styles["Normal"]))
@@ -459,6 +446,110 @@ def make_pdf(client_name: str, client_type: str, quote_no: str,
 
     doc.build(story)
     return buf.getvalue()
+
+# ---------- Excel export mirroring PDF ----------
+def export_proposal_excel(df_main, df_event, client_name, client_type, quote_no,
+                          subtotal, discount_pct, discount_amt, gst_amt, grand):
+    import io
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    except Exception as e:
+        raise ImportError("openpyxl is required for Excel export") from e
+
+    wb = Workbook()
+    thin = Side(style="thin", color="000000")
+    border_all = Border(left=thin, right=thin, top=thin, bottom=thin)
+    head_fill = PatternFill("solid", fgColor=BRAND_BLUE_HEX.replace("#",""))
+    head_font = Font(color="FFFFFF", bold=True)
+    right = Alignment(horizontal="right")
+    center = Alignment(horizontal="center")
+
+    # Sheet 1: Annual Fees
+    ws = wb.active; ws.title = "Annual Fees"
+    headers = ["Service", "Details", "Annual Fees (Rs.)"]
+    ws.append(headers)
+    for c in range(1, 4):
+        cell = ws.cell(row=1, column=c)
+        cell.fill, cell.font, cell.alignment, cell.border = head_fill, head_font, center, border_all
+
+    # Compact grouping
+    for svc, grp in df_main.groupby("Service", sort=True):
+        g = grp.sort_values(["Details"]).copy()
+        first = True
+        for _, r in g.iterrows():
+            amt = int(float(r.get("Annual Fees (Rs.)", 0) or 0))
+            ws.append([svc if first else "", r.get("Details", ""), amt])
+            first = False
+
+    # Format + borders
+    for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=3):
+        row[2].number_format = '#,##,##0'
+        for cell in row: cell.border = border_all
+
+    # Column widths
+    ws.column_dimensions["A"].width = 28
+    ws.column_dimensions["B"].width = 52
+    ws.column_dimensions["C"].width = 18
+
+    # Totals
+    start = ws.max_row + 2
+    ws.cell(row=start, column=2, value="Totals").font = Font(bold=True)
+    items = [
+        ("Subtotal", subtotal),
+        (f"Discount ({int(discount_pct)}%)", -discount_amt if discount_amt else 0),
+        ("Taxable Amount", subtotal - discount_amt),
+        ("GST (18%)", gst_amt),
+        ("Grand Total", grand),
+    ]
+    for i, (lbl, amt) in enumerate(items, start=start+1):
+        ws.cell(row=i, column=2, value=lbl)
+        c = ws.cell(row=i, column=3, value=int(round(amt)))
+        c.number_format = '#,##,##0'
+        c.alignment = right
+
+    # Notes
+    notes_start = ws.max_row + 2
+    notes = [
+        "Note:",
+        "1. The fees are exclusive of taxes and out-of-pocket expenses.",
+        "2. GST 18% extra.",
+        "3. Our scope is limited to the services listed above.",
+        "4. The above quotation is valid for a period of 30 days.",
+    ]
+    for line in notes:
+        ws.append([line])
+
+    # Sheet 2: Event-based (if any)
+    if not df_event.empty:
+        ws2 = wb.create_sheet("Event-based charges")
+        ws2.append(["Details", "Fees (Rs.)"])
+        h1, h2 = ws2["A1"], ws2["B1"]
+        for h in (h1, h2):
+            h.fill = head_fill; h.font = head_font; h.alignment = center; h.border = border_all
+        for _, r in df_event.iterrows():
+            detail = (str(r.get("Details","")).strip() or str(r.get("Service","")).strip())
+            amt = int(float(r.get("Annual Fees (Rs.)", 0) or 0))
+            ws2.append([detail, amt])
+        for row in ws2.iter_rows(min_row=2, max_row=ws2.max_row, min_col=1, max_col=2):
+            row[1].number_format = '#,##,##0'
+            for cell in row: cell.border = border_all
+        ws2.column_dimensions["A"].width, ws2.column_dimensions["B"].width = 60, 18
+
+    # Sheet 3: Cover
+    ws3 = wb.create_sheet("Cover")
+    meta = [
+        ["Client Name", client_name],
+        ["Client Entity Type", client_type],
+        ["Quotation No.", quote_no],
+        ["Date", datetime.now().strftime("%d-%b-%Y")],
+    ]
+    for r in meta: ws3.append(r)
+    ws3.column_dimensions["A"].width = 22
+    ws3.column_dimensions["B"].width = 50
+
+    bio = io.BytesIO(); wb.save(bio)
+    return bio.getvalue()
 
 def build_status(df_app, df_fees):
     active = df_app[df_app["Applicable"] == True].copy()
@@ -510,12 +601,6 @@ with st.sidebar:
         st.session_state["sig_bytes"] = sig_up.read()
 
     st.divider()
-    st.subheader("Appearance")
-    st.session_state["theme_choice"] = st.radio("Theme", ["Light", "Dark"], horizontal=True,
-                                               index=0 if st.session_state["theme_choice"] == "Light" else 1)
-    st.session_state["brand_color"] = st.color_picker("Brand color", st.session_state["brand_color"])
-
-    st.divider()
     with st.expander("Data status", expanded=False):
         service_defs = len(df_app[["Service", "SubService"]].drop_duplicates())
         st.write(f"Source: **{source}**")
@@ -529,30 +614,14 @@ with st.sidebar:
             st.warning("Some fees are missing/zero. Review below.")
             st.dataframe(status_df, use_container_width=True)
 
-# ---------- THEME CSS ----------
-theme_choice = st.session_state["theme_choice"]
-brand_color = st.session_state["brand_color"]
-
+# ---------- Minimal light CSS ----------
 st.markdown(f"""
 <style>
-@import url('https://fonts.googleapis.com/icon?family=Material+Icons');
-@import url('https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght@300..700&display=swap');
-
+.stApp {{ background: #ffffff !important; }}
+html, body {{ color: #111 !important; }}
 .stButton > button, .stDownloadButton > button {{
-  background: {brand_color} !important; color: #fff !important; border: 0; border-radius: 6px;
+  background: {BRAND_BLUE_HEX} !important; color: #fff !important; border: 0; border-radius: 6px;
 }}
-.stApp {{ background: {"#ffffff" if theme_choice=="Light" else "#0f1117"} !important; }}
-html, body {{ color: {"#111" if theme_choice=="Light" else "#e6e6e6"} !important; }}
-
-[data-testid="stSidebarCollapseButton"] span,
-[data-testid="stExpanderToggleIcon"] span,
-.material-icons, .material-symbols-outlined,
-[class*="material-icons"], [class*="material-symbols"] {{
-  font-family: 'Material Symbols Outlined','Material Icons' !important;
-  -webkit-font-feature-settings: 'liga';
-  -webkit-font-smoothing: antialiased;
-}}
-
 h1 > a, h2 > a, h3 > a, h4 > a {{ display: none !important; }}
 .label-lg {{ font-size: 1.05rem; font-weight: 700; margin: 6px 0 2px 0; }}
 </style>
@@ -615,7 +684,7 @@ if submit:
         else:
             df_main = main_df.copy()
             df_main["Include"] = True
-            df_main["MoveToEvent"] = False  # NEW
+            df_main["MoveToEvent"] = False
             st.session_state["quote_df"] = df_main
             st.session_state["event_df"] = event_df.copy()
             st.session_state["client_name"] = client_name
@@ -630,7 +699,7 @@ if st.session_state["editor_active"] and (
 ):
     st.success("Edit annual fees below. Event-based charges are listed separately and not included in totals.")
 
-    # ---- Main table editor (inside a FORM to avoid per-click reruns) ----
+    # Main table editor (form to avoid per-click reruns)
     if not st.session_state["quote_df"].empty:
         with st.form("edit_main"):
             edited = st.data_editor(
@@ -660,7 +729,6 @@ if st.session_state["editor_active"] and (
                 move_rows = edited[edited["MoveToEvent"] == True].copy()
                 if not move_rows.empty:
                     addon = move_rows[["Service", "Details", "Annual Fees (Rs.)"]].copy()
-                    # If Details blank, use Service name
                     addon["Details"] = addon["Details"].apply(lambda x: x.strip() if isinstance(x, str) else "")
                     addon.loc[addon["Details"] == "", "Details"] = addon["Service"]
                     st.session_state["event_df"] = pd.concat([st.session_state["event_df"], addon], ignore_index=True)
@@ -669,12 +737,8 @@ if st.session_state["editor_active"] and (
                     st.session_state["quote_df"] = kept
                     st.success(f"Moved {len(addon)} row(s) to Event-based.")
 
-        # Compute filtered AFTER possible updates
         qdf = st.session_state["quote_df"]
-        if "Include" in qdf.columns:
-            filtered = qdf[qdf["Include"] == True].copy()
-        else:
-            filtered = qdf.copy()
+        filtered = qdf[qdf["Include"] == True].copy() if "Include" in qdf.columns else qdf.copy()
         for col in ["Include", "MoveToEvent"]:
             if col in filtered.columns:
                 filtered.drop(columns=[col], inplace=True)
@@ -682,7 +746,7 @@ if st.session_state["editor_active"] and (
     else:
         filtered = pd.DataFrame(columns=["Service", "Details", "Annual Fees (Rs.)"])
 
-    # ---- Event-based editor (also in a form) ----
+    # Event-based editor (form)
     event_df = st.session_state["event_df"].copy()
     if not event_df.empty:
         st.subheader("Event-based charges (as applicable)")
@@ -725,37 +789,26 @@ if st.session_state["editor_active"] and (
             st.session_state["event_df"] = pd.DataFrame()
             st.rerun()
 
-    # Downloads (Excel + PDF)
-    colA, colB = st.columns([1, 1])
+    # ---- Single Excel that mirrors the PDF ----
     if not filtered.empty:
-        xlsx_buf = io.BytesIO()
         try:
-            with pd.ExcelWriter(xlsx_buf, engine="openpyxl") as writer:
-                filtered.to_excel(writer, index=False, sheet_name="Annual Fees")
-            colA.download_button(
-                "⬇️ Download Excel (Annual Fees)",
-                data=xlsx_buf.getvalue(),
-                file_name="annual_fees_proposal.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="dl_xlsx_main",
+            excel_bytes = export_proposal_excel(
+                filtered,
+                st.session_state["event_df"],
+                st.session_state["client_name"],
+                st.session_state["client_type"],
+                st.session_state.get("quote_no",""),
+                subtotal, float(st.session_state["discount_pct"]), discount_amt, gst_amt, grand
             )
-        except Exception:
-            colA.caption(":grey[Excel export unavailable (missing engine).]")
-
-    if not st.session_state["event_df"].empty:
-        ev_xlsx = io.BytesIO()
-        try:
-            with pd.ExcelWriter(ev_xlsx, engine="openpyxl") as writer:
-                st.session_state["event_df"].to_excel(writer, index=False, sheet_name="Event-based")
-            colB.download_button(
-                "⬇️ Download Excel (Event-based)",
-                data=ev_xlsx.getvalue(),
-                file_name="event_based_charges.xlsx",
+            st.download_button(
+                "⬇️ Download Excel (Full Proposal)",
+                data=excel_bytes,
+                file_name="Annual_Fees_Proposal.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="dl_xlsx_event",
+                key="dl_xlsx_full",
             )
-        except Exception:
-            colB.caption(":grey[Excel export for event-based unavailable (missing engine).]")
+        except ImportError:
+            st.warning("Excel export requires the 'openpyxl' package on the server.")
 
     # PDF (includes event table on a new page)
     pdf_bytes = make_pdf(
@@ -774,7 +827,6 @@ if st.session_state["editor_active"] and (
         email=st.session_state.get("client_email", ""),
         phone=st.session_state.get("client_phone", ""),
         proposal_start=st.session_state.get("proposal_start", ""),
-        signature_bytes=st.session_state.get("sig_bytes"),
     )
     st.download_button(
         "⬇️ Download PDF",
