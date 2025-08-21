@@ -26,14 +26,12 @@ ACCOUNTING_PLANS = ["Monthly Accounting", "Quarterly Accounting", "Half Yearly A
 EVENT_SERVICE = "EVENT BASED FILING"
 PT_SERVICE = "PROFESSION TAX RETURNS"
 
-# Force these SubServices to Event-based (by normalized/UPPER name)
 FORCE_EVENT_SUBS = {
     "FILING OF TDS RETURN IN FORM 26QB",
     "FILING OF TDS RETURN IN FORM 26QC",
     "FILING OF TDS RETURN IN FORM 27Q",
 }
 
-# Display fixes
 ACRONYMS = ["GST", "GSTR", "PTEC", "PTRC", "ADT", "ROC", "TDS", "AOC", "MGT", "26QB", "26QC", "DIR", "MSME", "KYC"]
 SUBSERVICE_RENAMES = {
     "CHANGE OF ADDRESS IN GST": "GST Amendment",
@@ -42,10 +40,9 @@ SUBSERVICE_RENAMES = {
     "ROC E-KYC FOR DIRECTORS": "ROC E-KYC For Directors",
 }
 
-GST_RATE_FIXED = 18  # always 18%
+GST_RATE_FIXED = 18
 BRAND_BLUE_HEX = "#0F4C81"
 
-# ---------- Session defaults ----------
 def _ss_set(k, v):
     if k not in st.session_state:
         st.session_state[k] = v
@@ -64,7 +61,6 @@ _ss_set("client_phone", "")
 _ss_set("proposal_start", "")
 _ss_set("sig_bytes", None)
 
-# ---------- Helpers ----------
 def normalize_str(x):
     return (x or "").strip().upper()
 
@@ -107,6 +103,13 @@ def money_inr(n: float) -> str:
             res = s + "," + res
     return "-" + res if neg else res
 
+def df_inr_preview(df: pd.DataFrame, amt_col: str, out_col: str) -> pd.DataFrame:
+    if df.empty:
+        return df
+    d = df.copy()
+    d[out_col] = pd.to_numeric(d[amt_col], errors="coerce").fillna(0.0).map(money_inr)
+    return d
+
 def load_matrices():
     xl = pd.ExcelFile("matrices.xlsx")
     df_app = xl.parse("Applicability").fillna("")
@@ -131,7 +134,6 @@ def build_quotes(client_name, client_type, df_app, df_fees,
         .loc[:, ["Service", "SubService", "ClientType"]]
         .copy()
     )
-    # Accounting → keep one plan
     if selected_accounting:
         sel = normalize_str(selected_accounting)
         is_acc = applicable["Service"].eq("ACCOUNTING")
@@ -139,11 +141,8 @@ def build_quotes(client_name, client_type, df_app, df_fees,
             [applicable.loc[~is_acc], applicable.loc[is_acc & (applicable["SubService"] == sel)]],
             ignore_index=True,
         )
-
-    # Split out Event Based Filing (no UI selection)
     main_app, event_app = split_main_vs_event(applicable)
 
-    # Profession Tax Returns → choose one (in main set)
     is_pt = main_app["Service"].eq(normalize_str(PT_SERVICE))
     if selected_pt_sub is not None:
         sel_pt = normalize_str(selected_pt_sub)
@@ -152,13 +151,11 @@ def build_quotes(client_name, client_type, df_app, df_fees,
             ignore_index=True,
         )
 
-    # Force selected SubServices into Event-based
     force_mask = main_app["SubService"].isin(FORCE_EVENT_SUBS)
     if force_mask.any():
         event_app = pd.concat([event_app, main_app.loc[force_mask]], ignore_index=True)
         main_app = main_app.loc[~force_mask].copy()
 
-    # Merge + format
     def _merge_and_format(df_in: pd.DataFrame) -> pd.DataFrame:
         if df_in.empty:
             return pd.DataFrame(columns=["Service", "Details", "Annual Fees (Rs.)"])
@@ -191,7 +188,6 @@ def compute_totals(df_selected: pd.DataFrame, discount_pct: float):
     grand = round(taxable + gst_amt, 2)
     return subtotal, discount_amt, taxable, gst_amt, grand
 
-# ---------- PDF helpers ----------
 def build_grouped_pdf_rows_compact(df: pd.DataFrame):
     rows = [["Service", "Details", "Annual Fees<br/>(Rs.)"]]
     for svc, grp in df.groupby("Service", sort=True):
@@ -229,7 +225,6 @@ def make_pdf(client_name: str, client_type: str, quote_no: str,
 
     buf = io.BytesIO()
 
-    # Background & card via PageTemplate
     left, right, top, bottom = 18*mm, 18*mm, 16*mm, 16*mm
     card_inset = 10*mm
     brand_blue = colors.HexColor(BRAND_BLUE_HEX)
@@ -239,14 +234,12 @@ def make_pdf(client_name: str, client_type: str, quote_no: str,
         canv.saveState()
         canv.setFillColor(colors.HexColor("#F7F9FC"))
         canv.rect(0, 0, pw, ph, stroke=0, fill=1)
-        # white card
         x = card_inset; y = card_inset
         w = pw - 2*card_inset; h = ph - 2*card_inset
         canv.setFillColor(colors.white)
         canv.setStrokeColor(colors.HexColor("#E5E7EB"))
         canv.setLineWidth(1)
         canv.rect(x, y, w, h, stroke=1, fill=1)
-        # optional faint logo watermark
         if letterhead:
             try:
                 for n in ("logo.png", "logo.jpg", "logo.jpeg"):
@@ -270,7 +263,6 @@ def make_pdf(client_name: str, client_type: str, quote_no: str,
         canv.restoreState()
 
     def on_page_end(canv, doc_):
-        # footer
         canv.saveState()
         canv.setFont("Helvetica", 8)
         y_line = 20*mm
@@ -293,8 +285,8 @@ def make_pdf(client_name: str, client_type: str, quote_no: str,
     head_center = ParagraphStyle("HeadCenter", parent=styles["Normal"], alignment=TA_CENTER, fontName="Helvetica-Bold")
     story = []
 
-    # Small logo when not using watermark
     def find_logo_path():
+        import os
         for name in ("logo.png", "logo.jpg", "logo.jpeg"):
             if os.path.exists(name):
                 return name
@@ -308,17 +300,14 @@ def make_pdf(client_name: str, client_type: str, quote_no: str,
         story.append(Image(logo_path, width=ow*r, height=oh*r))
         story.append(Spacer(1, 4))
 
-    # Title
     story.append(Paragraph("<b>V. Purohit & Associates</b>", styles["Title"]))
     story.append(Paragraph("<b>Annual Fees Proposal</b>", styles["h2"]))
     story.append(Spacer(1, 6))
 
-    # --- Header block: 2-column meta table ---
     left_cells = []
     right_cells = []
     left_cells.append(Paragraph(f"<b>Client Name:</b> {client_name}", styles["Normal"]))
     left_cells.append(Paragraph(f"<b>Client Entity Type:</b> {client_type}", styles["Normal"]))
-    # Address / Email / Phone (optional)
     addr_html = ""
     if addr and addr.strip():
         addr_html = "<br/>".join([ln.strip() for ln in addr.splitlines() if ln.strip()])
@@ -327,11 +316,11 @@ def make_pdf(client_name: str, client_type: str, quote_no: str,
         left_cells.append(Paragraph(f"<b>Email:</b> {email.strip()}", styles["Normal"]))
     if phone and phone.strip():
         left_cells.append(Paragraph(f"<b>Phone:</b> {phone.strip()}", styles["Normal"]))
-    # Right column: Quotation No., Date, Proposed Start (if any)
     right_cells.append(Paragraph(f"<b>Quotation No.:</b> {quote_no}", styles["Normal"]))
     right_cells.append(Paragraph(f"<b>Date:</b> {datetime.now().strftime('%d-%b-%Y')}", styles["Normal"]))
     if proposal_start and str(proposal_start).strip():
         right_cells.append(Paragraph(f"<b>Proposed Start:</b> {proposal_start.strip()}", styles["Normal"]))
+
     rows_n = max(len(left_cells), len(right_cells))
     while len(left_cells) < rows_n:
         left_cells.append(Paragraph("&nbsp;", styles["Normal"]))
@@ -348,7 +337,6 @@ def make_pdf(client_name: str, client_type: str, quote_no: str,
     story.append(meta_table)
     story.append(Spacer(1, 8))
 
-    # MAIN TABLE (brand-blue header) with compact grouping
     table_rows = build_grouped_pdf_rows_compact(df_quote)
     table_rows[0] = [
         Paragraph("<b>Service</b>", head_center),
@@ -368,7 +356,6 @@ def make_pdf(client_name: str, client_type: str, quote_no: str,
             ("BOTTOMPADDING", (0,0), (-1,0), 6),
             ("BOX", (0,0), (-1,0), 0.9, brand_blue),
             ("INNERGRID", (0,0), (-1,0), 0.9, brand_blue),
-
             ("FONTSIZE", (0,1), (-1,-1), 10),
             ("TOPPADDING", (0,1), (-1,-1), 4),
             ("BOTTOMPADDING", (0,1), (-1,-1), 4),
@@ -380,7 +367,6 @@ def make_pdf(client_name: str, client_type: str, quote_no: str,
     story.append(table)
     story.append(Spacer(1, 8))
 
-    # TOTALS
     tot_lines = [
         ["", "Subtotal", money_inr(subtotal)],
         ["", f"Discount ({discount_pct:.0f}%)", f"- {money_inr(discount_amt)}"] if discount_amt > 0 else ["", "Discount (0%)", money_inr(0)],
@@ -402,7 +388,6 @@ def make_pdf(client_name: str, client_type: str, quote_no: str,
     story.append(t2)
     story.append(Spacer(1, 8))
 
-    # Notes
     notes = (
         "<b>Note:</b><br/>"
         "1. The fees are exclusive of taxes and out-of-pocket expenses.<br/>"
@@ -413,7 +398,6 @@ def make_pdf(client_name: str, client_type: str, quote_no: str,
     story.append(Paragraph(notes, styles["Normal"]))
     story.append(Spacer(1, 10))
 
-    # EVENT-BASED TABLE on NEW PAGE
     if not df_event.empty:
         story.append(PageBreak())
         story.append(Paragraph("<b>Event-based charges (as applicable, not included in annual fees)</b>", styles["Normal"]))
@@ -433,7 +417,6 @@ def make_pdf(client_name: str, client_type: str, quote_no: str,
             ("BOTTOMPADDING", (0,0), (-1,0), 6),
             ("BOX", (0,0), (-1,0), 0.9, brand_blue),
             ("INNERGRID", (0,0), (-1,0), 0.9, brand_blue),
-
             ("FONTSIZE", (0,1), (-1,-1), 10),
             ("TOPPADDING", (0,1), (-1,-1), 4),
             ("BOTTOMPADDING", (0,1), (-1,-1), 4),
@@ -447,15 +430,11 @@ def make_pdf(client_name: str, client_type: str, quote_no: str,
     doc.build(story)
     return buf.getvalue()
 
-# ---------- Excel export mirroring PDF ----------
 def export_proposal_excel(df_main, df_event, client_name, client_type, quote_no,
                           subtotal, discount_pct, discount_amt, gst_amt, grand):
     import io
-    try:
-        from openpyxl import Workbook
-        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-    except Exception as e:
-        raise ImportError("openpyxl is required for Excel export") from e
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
     wb = Workbook()
     thin = Side(style="thin", color="000000")
@@ -465,15 +444,13 @@ def export_proposal_excel(df_main, df_event, client_name, client_type, quote_no,
     right = Alignment(horizontal="right")
     center = Alignment(horizontal="center")
 
-    # Sheet 1: Annual Fees
     ws = wb.active; ws.title = "Annual Fees"
     headers = ["Service", "Details", "Annual Fees (Rs.)"]
     ws.append(headers)
-    for c in range(1, 4):
+    for c in range(1, 3+1):
         cell = ws.cell(row=1, column=c)
         cell.fill, cell.font, cell.alignment, cell.border = head_fill, head_font, center, border_all
 
-    # Compact grouping
     for svc, grp in df_main.groupby("Service", sort=True):
         g = grp.sort_values(["Details"]).copy()
         first = True
@@ -482,17 +459,14 @@ def export_proposal_excel(df_main, df_event, client_name, client_type, quote_no,
             ws.append([svc if first else "", r.get("Details", ""), amt])
             first = False
 
-    # Format + borders
     for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=3):
         row[2].number_format = '#,##,##0'
         for cell in row: cell.border = border_all
 
-    # Column widths
     ws.column_dimensions["A"].width = 28
     ws.column_dimensions["B"].width = 52
     ws.column_dimensions["C"].width = 18
 
-    # Totals
     start = ws.max_row + 2
     ws.cell(row=start, column=2, value="Totals").font = Font(bold=True)
     items = [
@@ -505,11 +479,8 @@ def export_proposal_excel(df_main, df_event, client_name, client_type, quote_no,
     for i, (lbl, amt) in enumerate(items, start=start+1):
         ws.cell(row=i, column=2, value=lbl)
         c = ws.cell(row=i, column=3, value=int(round(amt)))
-        c.number_format = '#,##,##0'
-        c.alignment = right
+        c.number_format = '#,##,##0'; c.alignment = right
 
-    # Notes
-    notes_start = ws.max_row + 2
     notes = [
         "Note:",
         "1. The fees are exclusive of taxes and out-of-pocket expenses.",
@@ -520,7 +491,6 @@ def export_proposal_excel(df_main, df_event, client_name, client_type, quote_no,
     for line in notes:
         ws.append([line])
 
-    # Sheet 2: Event-based (if any)
     if not df_event.empty:
         ws2 = wb.create_sheet("Event-based charges")
         ws2.append(["Details", "Fees (Rs.)"])
@@ -536,7 +506,6 @@ def export_proposal_excel(df_main, df_event, client_name, client_type, quote_no,
             for cell in row: cell.border = border_all
         ws2.column_dimensions["A"].width, ws2.column_dimensions["B"].width = 60, 18
 
-    # Sheet 3: Cover
     ws3 = wb.create_sheet("Cover")
     meta = [
         ["Client Name", client_name],
@@ -572,17 +541,14 @@ def build_status(df_app, df_fees):
     status["ClientType"] = status["ClientType"].str.title()
     return status
 
-# ---------- UI ----------
 st.set_page_config(page_title=APP_TITLE, page_icon="📄", layout="centered")
 
-# Load matrices FIRST
 try:
     df_app, df_fees, source = load_matrices()
 except Exception as e:
     st.error(f"Error loading matrices: {e}")
     st.stop()
 
-# ---------- SIDEBAR ----------
 with st.sidebar:
     st.markdown(
         "**What this tool does:**\n\n"
@@ -592,14 +558,12 @@ with st.sidebar:
         "4. Export to PDF/Excel"
     )
     st.divider()
-
     st.subheader("Options")
     st.session_state["discount_pct"] = st.number_input("1) Discount %", 0, 100, int(st.session_state["discount_pct"]), 1)
     st.session_state["letterhead"] = st.checkbox("2) Letterhead mode (watermark logo)", value=st.session_state["letterhead"])
     sig_up = st.file_uploader("3) Signature / Stamp image (optional)", type=["png", "jpg", "jpeg"])
     if sig_up is not None:
         st.session_state["sig_bytes"] = sig_up.read()
-
     st.divider()
     with st.expander("Data status", expanded=False):
         service_defs = len(df_app[["Service", "SubService"]].drop_duplicates())
@@ -614,24 +578,21 @@ with st.sidebar:
             st.warning("Some fees are missing/zero. Review below.")
             st.dataframe(status_df, use_container_width=True)
 
-# ---------- Minimal light CSS ----------
-st.markdown(f"""
+st.markdown("""
 <style>
-.stApp {{ background: #ffffff !important; }}
-html, body {{ color: #111 !important; }}
-.stButton > button, .stDownloadButton > button {{
-  background: {BRAND_BLUE_HEX} !important; color: #fff !important; border: 0; border-radius: 6px;
-}}
-h1 > a, h2 > a, h3 > a, h4 > a {{ display: none !important; }}
-.label-lg {{ font-size: 1.05rem; font-weight: 700; margin: 6px 0 2px 0; }}
+.stApp { background: #ffffff !important; }
+html, body { color: #111 !important; }
+.stButton > button, .stDownloadButton > button {
+  background: #0F4C81 !important; color: #fff !important; border: 0; border-radius: 6px;
+}
+h1 > a, h2 > a, h3 > a, h4 > a { display: none !important; }
+.label-lg { font-size: 1.05rem; font-weight: 700; margin: 6px 0 2px 0; }
 </style>
 """, unsafe_allow_html=True)
 
-# ---------- MAIN HEADER ----------
 st.title("Quotation Generator")
 st.subheader("V. Purohit & Associates")
 
-# ---------- FORM ----------
 with st.form("quote_form", clear_on_submit=False):
     st.markdown('<div class="label-lg">➤ Client Name*</div>', unsafe_allow_html=True)
     client_name = st.text_input("", st.session_state.get("client_name", ""), placeholder="Enter client name")
@@ -647,10 +608,8 @@ with st.form("quote_form", clear_on_submit=False):
     with colY:
         phone = st.text_input("", st.session_state.get("client_phone", ""), placeholder="Phone")
 
-    # Proposed Start (optional free text)
     st.markdown('<div class="label-lg">➤ Proposed Start (optional)</div>', unsafe_allow_html=True)
-    proposal_start = st.text_input("", st.session_state.get("proposal_start", ""),
-                                   placeholder="e.g., Aug 2025 / FY 2025-26")
+    proposal_start = st.text_input("", st.session_state.get("proposal_start", ""), placeholder="e.g., Aug 2025 / FY 2025-26")
 
     ct_norm = normalize_str(client_type)
     app_ct = df_app[(df_app["ClientType"] == ct_norm) & (df_app["Applicable"] == True)]
@@ -667,7 +626,6 @@ with st.form("quote_form", clear_on_submit=False):
 
     submit = st.form_submit_button("Generate Table")
 
-# ---------- EDITOR / TABLES ----------
 if submit:
     if not client_name.strip():
         st.error("Please enter Client Name.")
@@ -686,7 +644,9 @@ if submit:
             df_main["Include"] = True
             df_main["MoveToEvent"] = False
             st.session_state["quote_df"] = df_main
-            st.session_state["event_df"] = event_df.copy()
+            ev = event_df.copy()
+            ev["MoveToMain"] = False  # NEW: enable moving back
+            st.session_state["event_df"] = ev
             st.session_state["client_name"] = client_name
             st.session_state["client_type"] = client_type
             st.session_state["client_addr"] = addr
@@ -699,7 +659,7 @@ if st.session_state["editor_active"] and (
 ):
     st.success("Edit annual fees below. Event-based charges are listed separately and not included in totals.")
 
-    # Main table editor (form to avoid per-click reruns)
+    # MAIN editor
     if not st.session_state["quote_df"].empty:
         with st.form("edit_main"):
             edited = st.data_editor(
@@ -715,10 +675,7 @@ if st.session_state["editor_active"] and (
                         help="Edit the fee; totals & PDF will use this value."
                     ),
                 },
-                num_rows="fixed",
-                key="quote_editor",
-                hide_index=True,
-                height=420,
+                num_rows="fixed", key="quote_editor", hide_index=True, height=420,
             )
             col_m1, col_m2 = st.columns([1,1])
             apply_edits = col_m1.form_submit_button("Apply edits")
@@ -731,7 +688,12 @@ if st.session_state["editor_active"] and (
                     addon = move_rows[["Service", "Details", "Annual Fees (Rs.)"]].copy()
                     addon["Details"] = addon["Details"].apply(lambda x: x.strip() if isinstance(x, str) else "")
                     addon.loc[addon["Details"] == "", "Details"] = addon["Service"]
-                    st.session_state["event_df"] = pd.concat([st.session_state["event_df"], addon], ignore_index=True)
+                    # add to event
+                    ev_now = st.session_state["event_df"].copy()
+                    if "MoveToMain" not in ev_now.columns:
+                        ev_now["MoveToMain"] = False
+                    ev_now = pd.concat([ev_now, addon.assign(MoveToMain=False)], ignore_index=True)
+                    st.session_state["event_df"] = ev_now
                     kept = edited.loc[edited["MoveToEvent"] != True].copy()
                     kept["MoveToEvent"] = False
                     st.session_state["quote_df"] = kept
@@ -743,36 +705,68 @@ if st.session_state["editor_active"] and (
             if col in filtered.columns:
                 filtered.drop(columns=[col], inplace=True)
         filtered["Annual Fees (Rs.)"] = pd.to_numeric(filtered["Annual Fees (Rs.)"], errors="coerce").fillna(0.0)
+
+        # INR preview (UI)
+        st.caption("Preview (Indian format):")
+        st.dataframe(
+            df_inr_preview(filtered, "Annual Fees (Rs.)", "Annual Fees (Rs.) – INR"),
+            use_container_width=True, hide_index=True
+        )
     else:
         filtered = pd.DataFrame(columns=["Service", "Details", "Annual Fees (Rs.)"])
 
-    # Event-based editor (form)
+    # EVENT editor (with MoveToMain)
     event_df = st.session_state["event_df"].copy()
     if not event_df.empty:
         st.subheader("Event-based charges (as applicable)")
         st.caption("These are not included in the annual fees totals.")
+        if "MoveToMain" not in event_df.columns:
+            event_df["MoveToMain"] = False
         with st.form("event_form"):
             event_edited = st.data_editor(
                 event_df,
                 use_container_width=True,
                 disabled=["Service", "Details"],
-                column_order=["Service", "Details", "Annual Fees (Rs.)"],
+                column_order=["MoveToMain", "Service", "Details", "Annual Fees (Rs.)"],
                 column_config={
+                    "MoveToMain": st.column_config.CheckboxColumn(help="Tick and submit to move back to the main table."),
                     "Annual Fees (Rs.)": st.column_config.NumberColumn(
                         "Fees (Rs.)", min_value=0, step=100, format="%.0f",
                         help="Edit the fee; shown separately and not included in totals."
                     ),
                 },
-                num_rows="fixed",
-                key="event_editor",
-                hide_index=True,
-                height=320,
+                num_rows="fixed", key="event_editor", hide_index=True, height=320,
             )
-            ev_apply = st.form_submit_button("Apply event edits")
+            ev_apply = st.form_submit_button("Apply event edits / move to Main")
         if ev_apply:
-            st.session_state["event_df"] = event_edited
+            # Move back to Main if marked
+            to_main = event_edited[event_edited["MoveToMain"] == True].copy()
+            keep_ev = event_edited[event_edited["MoveToMain"] != True].copy()
+            if not to_main.empty:
+                add_main = to_main[["Service", "Details", "Annual Fees (Rs.)"]].copy()
+                add_main["Details"] = add_main["Details"].apply(lambda x: x.strip() if isinstance(x, str) else "")
+                add_main.loc[add_main["Details"] == "", "Details"] = add_main["Service"]
+                main_now = st.session_state["quote_df"].copy()
+                if main_now.empty:
+                    main_now = pd.DataFrame(columns=["Include","MoveToEvent","Service","Details","Annual Fees (Rs.)"])
+                add_main["Include"] = True
+                add_main["MoveToEvent"] = False
+                cols = ["Include","MoveToEvent","Service","Details","Annual Fees (Rs.)"]
+                main_now = pd.concat([main_now, add_main[cols]], ignore_index=True)
+                st.session_state["quote_df"] = main_now
+                st.success(f"Moved {len(add_main)} row(s) to Main.")
+            # reset MoveToMain flags & save event table
+            if "MoveToMain" in keep_ev.columns:
+                keep_ev["MoveToMain"] = False
+            st.session_state["event_df"] = keep_ev
 
-    # Totals (UI)
+        # INR preview for event
+        st.caption("Event-based preview (Indian format):")
+        st.dataframe(
+            df_inr_preview(st.session_state["event_df"], "Annual Fees (Rs.)", "Fees (Rs.) – INR"),
+            use_container_width=True, hide_index=True
+        )
+
     subtotal, discount_amt, taxable, gst_amt, grand = compute_totals(filtered, st.session_state["discount_pct"])
     c1, c2, c3 = st.columns([1, 1, 1])
     with c1:
@@ -789,14 +783,12 @@ if st.session_state["editor_active"] and (
             st.session_state["event_df"] = pd.DataFrame()
             st.rerun()
 
-    # ---- Single Excel that mirrors the PDF ----
+    # Excel (Indian format via number format)
     if not filtered.empty:
         try:
             excel_bytes = export_proposal_excel(
-                filtered,
-                st.session_state["event_df"],
-                st.session_state["client_name"],
-                st.session_state["client_type"],
+                filtered, st.session_state["event_df"],
+                st.session_state["client_name"], st.session_state["client_type"],
                 st.session_state.get("quote_no",""),
                 subtotal, float(st.session_state["discount_pct"]), discount_amt, gst_amt, grand
             )
@@ -807,31 +799,21 @@ if st.session_state["editor_active"] and (
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 key="dl_xlsx_full",
             )
-        except ImportError:
-            st.warning("Excel export requires the 'openpyxl' package on the server.")
+        except Exception:
+            st.warning("Excel export requires 'openpyxl' on the server.")
 
-    # PDF (includes event table on a new page)
     pdf_bytes = make_pdf(
-        st.session_state["client_name"],
-        st.session_state["client_type"],
+        st.session_state["client_name"], st.session_state["client_type"],
         datetime.now().strftime("QTN-%Y%m%d-%H%M%S") if not st.session_state.get("quote_no") else st.session_state["quote_no"],
-        filtered,
-        st.session_state["event_df"],
-        subtotal,
-        float(st.session_state["discount_pct"]),
-        discount_amt,
-        gst_amt,
-        grand,
+        filtered, st.session_state["event_df"],
+        subtotal, float(st.session_state["discount_pct"]), discount_amt, gst_amt, grand,
         letterhead=st.session_state["letterhead"],
-        addr=st.session_state.get("client_addr", ""),
-        email=st.session_state.get("client_email", ""),
-        phone=st.session_state.get("client_phone", ""),
-        proposal_start=st.session_state.get("proposal_start", ""),
+        addr=st.session_state.get("client_addr", ""), email=st.session_state.get("client_email", ""),
+        phone=st.session_state.get("client_phone", ""), proposal_start=st.session_state.get("proposal_start", ""),
     )
     st.download_button(
         "⬇️ Download PDF",
         data=pdf_bytes,
         file_name=f"Annual_Fees_Proposal_{st.session_state['client_name'].replace(' ', '_')}.pdf",
-        mime="application/pdf",
-        key="dl_pdf",
+        mime="application/pdf", key="dl_pdf",
     )
