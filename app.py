@@ -334,9 +334,8 @@ def make_pdf(client_name: str, client_type: str, quote_no: str,
     notes = (
         "<b>Note:</b><br/>"
         "1. The fees are exclusive of taxes and out-of-pocket expenses.<br/>"
-        "2. GST 18% extra.<br/>"
-        "3. Our scope is limited to the services listed above.<br/>"
-        "4. The above quotation is valid for a period of 30 days."
+        "2. Our scope is limited to the services listed above.<br/>"
+        "3. The above quotation is valid for a period of 30 days."
     )
     story.append(Paragraph(notes, styles["Normal"])); story.append(Spacer(1,10))
 
