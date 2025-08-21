@@ -26,12 +26,14 @@ ACCOUNTING_PLANS = ["Monthly Accounting", "Quarterly Accounting", "Half Yearly A
 EVENT_SERVICE = "EVENT BASED FILING"
 PT_SERVICE = "PROFESSION TAX RETURNS"
 
+# Force these to Event-based
 FORCE_EVENT_SUBS = {
     "FILING OF TDS RETURN IN FORM 26QB",
     "FILING OF TDS RETURN IN FORM 26QC",
     "FILING OF TDS RETURN IN FORM 27Q",
 }
 
+# Text casing/renames
 ACRONYMS = ["GST", "GSTR", "PTEC", "PTRC", "ADT", "ROC", "TDS", "AOC", "MGT", "26QB", "26QC", "DIR", "MSME", "KYC"]
 SUBSERVICE_RENAMES = {
     "CHANGE OF ADDRESS IN GST": "GST Amendment",
@@ -61,8 +63,6 @@ _ss_set("client_email", "")
 _ss_set("client_phone", "")
 _ss_set("proposal_start", "")
 _ss_set("sig_bytes", None)
-_ss_set("edit_main", False)   # NEW: edit toggle
-_ss_set("edit_event", False)  # NEW: edit toggle
 
 # --------- Helpers ---------
 def normalize_str(x):
@@ -140,10 +140,10 @@ def build_quotes(client_name, client_type, df_app, df_fees,
             ignore_index=True,
         )
 
-    # Split event-based
+    # Split Event-based
     main_app, event_app = split_main_vs_event(applicable)
 
-    # Profession Tax Returns → choose one
+    # Profession Tax Returns → choose one (in main)
     is_pt = main_app["Service"].eq(normalize_str(PT_SERVICE))
     if selected_pt_sub is not None:
         sel_pt = normalize_str(selected_pt_sub)
@@ -152,7 +152,7 @@ def build_quotes(client_name, client_type, df_app, df_fees,
             ignore_index=True,
         )
 
-    # Force specific subs to event
+    # Force 26QB/26QC/27Q to Event-based
     force_mask = main_app["SubService"].isin(FORCE_EVENT_SUBS)
     if force_mask.any():
         event_app = pd.concat([event_app, main_app.loc[force_mask]], ignore_index=True)
@@ -434,7 +434,7 @@ def make_pdf(client_name: str, client_type: str, quote_no: str,
     doc.build(story)
     return buf.getvalue()
 
-# --------- Excel export (Indian format via number format) ---------
+# --------- Excel export ---------
 def export_proposal_excel(df_main, df_event, client_name, client_type, quote_no,
                           subtotal, discount_pct, discount_amt, gst_amt, grand):
     import io
@@ -642,9 +642,7 @@ if submit:
             df_main["Include"] = True
             df_main["MoveToEvent"] = False
             st.session_state["quote_df"] = df_main
-            ev = event_df.copy()
-            ev["MoveToMain"] = False
-            st.session_state["event_df"] = ev
+            st.session_state["event_df"] = event_df.copy()
             st.session_state["client_name"] = client_name
             st.session_state["client_type"] = client_type
             st.session_state["client_addr"] = addr
@@ -652,17 +650,14 @@ if submit:
             st.session_state["client_phone"] = phone
             st.session_state["editor_active"] = True
 
-# --------- Editors / Displays ---------
+# --------- Editors / Totals / Exports ---------
 if st.session_state["editor_active"] and (
     not st.session_state["quote_df"].empty or not st.session_state["event_df"].empty
 ):
     st.success("Edit annual fees below. Event-based charges are listed separately and not included in totals.")
 
-    # ===== Main table =====
-    st.markdown("**Annual fees (Main)**")
-    st.session_state["edit_main"] = st.toggle("Edit table", value=st.session_state["edit_main"], key="toggle_main")
-    if st.session_state["edit_main"]:
-        # Editable (numeric)
+    # MAIN editor – Include, MoveToEvent, fees
+    if not st.session_state["quote_df"].empty:
         with st.form("edit_main"):
             edited = st.data_editor(
                 st.session_state["quote_df"],
@@ -670,9 +665,12 @@ if st.session_state["editor_active"] and (
                 disabled=["Service", "Details"],
                 column_order=["Include", "MoveToEvent", "Service", "Details", "Annual Fees (Rs.)"],
                 column_config={
-                    "Include": st.column_config.CheckboxColumn(),
-                    "MoveToEvent": st.column_config.CheckboxColumn(help="Tick and submit to shift to Event-based."),
-                    "Annual Fees (Rs.)": st.column_config.NumberColumn("Annual Fees (Rs.)", min_value=0, step=100, format="%.0f"),
+                    "Include": st.column_config.CheckboxColumn(help="Uncheck to remove this row from the proposal/PDF."),
+                    "MoveToEvent": st.column_config.CheckboxColumn(help="Tick and submit to shift to Event-based table."),
+                    "Annual Fees (Rs.)": st.column_config.NumberColumn(
+                        "Annual Fees (Rs.)", min_value=0, step=100, format="%.0f",
+                        help="Edit the fee; totals & PDF will use this value."
+                    ),
                 },
                 num_rows="fixed", key="quote_editor", hide_index=True, height=420,
             )
@@ -687,79 +685,46 @@ if st.session_state["editor_active"] and (
                     addon = move_rows[["Service", "Details", "Annual Fees (Rs.)"]].copy()
                     addon["Details"] = addon["Details"].apply(lambda x: x.strip() if isinstance(x, str) else "")
                     addon.loc[addon["Details"] == "", "Details"] = addon["Service"]
+                    # add to event
                     ev_now = st.session_state["event_df"].copy()
-                    if "MoveToMain" not in ev_now.columns:
-                        ev_now["MoveToMain"] = False
-                    ev_now = pd.concat([ev_now, addon.assign(MoveToMain=False)], ignore_index=True)
+                    ev_now = pd.concat([ev_now, addon], ignore_index=True)
                     st.session_state["event_df"] = ev_now
                     kept = edited.loc[edited["MoveToEvent"] != True].copy()
                     kept["MoveToEvent"] = False
                     st.session_state["quote_df"] = kept
                     st.success(f"Moved {len(addon)} row(s) to Event-based.")
+
+        qdf = st.session_state["quote_df"]
+        filtered = qdf[qdf["Include"] == True].copy() if "Include" in qdf.columns else qdf.copy()
+        for col in ["Include", "MoveToEvent"]:
+            if col in filtered.columns:
+                filtered.drop(columns=[col], inplace=True)
+        filtered["Annual Fees (Rs.)"] = pd.to_numeric(filtered["Annual Fees (Rs.)"], errors="coerce").fillna(0.0)
     else:
-        # Display only (Indian formatted) — no new columns
-        disp = st.session_state["quote_df"].copy()
-        disp = disp[disp["Include"] == True] if "Include" in disp.columns else disp
-        disp = disp.loc[:, ["Service", "Details", "Annual Fees (Rs.)"]]
-        disp["Annual Fees (Rs.)"] = pd.to_numeric(disp["Annual Fees (Rs.)"], errors="coerce").fillna(0.0).map(money_inr)
-        st.dataframe(disp, use_container_width=True, hide_index=True)
+        filtered = pd.DataFrame(columns=["Service", "Details", "Annual Fees (Rs.)"])
 
-    # Build numeric filtered for totals/PDF regardless of view
-    qdf = st.session_state["quote_df"]
-    filtered = qdf[qdf["Include"] == True].copy() if "Include" in qdf.columns else qdf.copy()
-    for col in ["Include", "MoveToEvent"]:
-        if col in filtered.columns:
-            filtered.drop(columns=[col], inplace=True)
-    filtered["Annual Fees (Rs.)"] = pd.to_numeric(filtered["Annual Fees (Rs.)"], errors="coerce").fillna(0.0)
-
-    # ===== Event-based table =====
-    if not st.session_state["event_df"].empty:
-        st.markdown("**Event-based charges (as applicable)**")
-        st.caption("Not included in annual totals.")
-        st.session_state["edit_event"] = st.toggle("Edit event table", value=st.session_state["edit_event"], key="toggle_event")
-        if st.session_state["edit_event"]:
-            with st.form("event_form"):
-                ev = st.session_state["event_df"].copy()
-                if "MoveToMain" not in ev.columns:
-                    ev["MoveToMain"] = False
-                event_edited = st.data_editor(
-                    ev,
-                    use_container_width=True,
-                    disabled=["Service", "Details"],
-                    column_order=["MoveToMain", "Service", "Details", "Annual Fees (Rs.)"],
-                    column_config={
-                        "MoveToMain": st.column_config.CheckboxColumn(help="Tick and submit to move back to Main."),
-                        "Annual Fees (Rs.)": st.column_config.NumberColumn("Fees (Rs.)", min_value=0, step=100, format="%.0f"),
-                    },
-                    num_rows="fixed", key="event_editor", hide_index=True, height=320,
-                )
-                ev_apply = st.form_submit_button("Apply event edits / move to Main")
-            if ev_apply:
-                to_main = event_edited[event_edited["MoveToMain"] == True].copy()
-                keep_ev = event_edited[event_edited["MoveToMain"] != True].copy()
-                if not to_main.empty:
-                    add_main = to_main[["Service", "Details", "Annual Fees (Rs.)"]].copy()
-                    add_main["Details"] = add_main["Details"].apply(lambda x: x.strip() if isinstance(x, str) else "")
-                    add_main.loc[add_main["Details"] == "", "Details"] = add_main["Service"]
-                    main_now = st.session_state["quote_df"].copy()
-                    if main_now.empty:
-                        main_now = pd.DataFrame(columns=["Include","MoveToEvent","Service","Details","Annual Fees (Rs.)"])
-                    add_main["Include"] = True
-                    add_main["MoveToEvent"] = False
-                    cols = ["Include","MoveToEvent","Service","Details","Annual Fees (Rs.)"]
-                    main_now = pd.concat([main_now, add_main[cols]], ignore_index=True)
-                    st.session_state["quote_df"] = main_now
-                    st.success(f"Moved {len(add_main)} row(s) to Main.")
-                if "MoveToMain" in keep_ev.columns:
-                    keep_ev["MoveToMain"] = False
-                st.session_state["event_df"] = keep_ev
-        else:
-            ev_disp = st.session_state["event_df"].copy()
-            ev_disp = ev_disp.loc[:, ["Service", "Details", "Annual Fees (Rs.)"]]
-            ev_disp["Annual Fees (Rs.)"] = pd.to_numeric(ev_disp["Annual Fees (Rs.)"], errors="coerce").fillna(0.0).map(money_inr)
-            # Show only Details + Fees (Rs.) as per your PDF layout
-            ev_disp["Details"] = ev_disp["Details"].where(ev_disp["Details"].str.strip().astype(bool), ev_disp["Service"])
-            st.dataframe(ev_disp.loc[:, ["Details", "Annual Fees (Rs.)"]], use_container_width=True, hide_index=True)
+    # EVENT editor – fees editable (no move-back here)
+    event_df = st.session_state["event_df"].copy()
+    if not event_df.empty:
+        st.subheader("Event-based charges (as applicable)")
+        st.caption("These are not included in the annual fees totals.")
+        with st.form("event_form"):
+            event_edited = st.data_editor(
+                event_df,
+                use_container_width=True,
+                disabled=["Service", "Details"],
+                column_order=["Service", "Details", "Annual Fees (Rs.)"],
+                column_config={
+                    "Annual Fees (Rs.)": st.column_config.NumberColumn(
+                        "Fees (Rs.)", min_value=0, step=100, format="%.0f",
+                        help="Edit the fee; shown separately and not included in totals."
+                    ),
+                },
+                num_rows="fixed", key="event_editor", hide_index=True, height=320,
+            )
+            ev_apply = st.form_submit_button("Apply event edits")
+        if ev_apply:
+            st.session_state["event_df"] = event_edited
 
     # Totals (UI)
     subtotal, discount_amt, taxable, gst_amt, grand = compute_totals(filtered, st.session_state["discount_pct"])
