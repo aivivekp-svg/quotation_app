@@ -194,9 +194,12 @@ def build_grouped_pdf_rows_compact(df: pd.DataFrame):
 def build_event_pdf_rows(df: pd.DataFrame):
     rows = [["Details","Fees<br/>(Rs.)"]]
     for _, row in df.iterrows():
-        amt = parse_inr(row["Annual Fees (Rs.)"])
+        raw = row.get("Annual Fees (Rs.)", "")
+        sraw = str(raw).strip()
+        amt = parse_inr(raw)
+        display_amt = "" if sraw == "" else money_inr(amt)  # keep blank if user left it blank
         detail = (str(row.get("Details","")).strip() or str(row.get("Service","")).strip())
-        rows.append([detail, money_inr(amt)])
+        rows.append([detail, display_amt])
     return rows
 
 def make_pdf(client_name: str, client_type: str, quote_no: str,
@@ -325,7 +328,7 @@ def make_pdf(client_name: str, client_type: str, quote_no: str,
     t2 = Table([["","",""], *tot_lines], colWidths=col_widths)
     t2.setStyle(TableStyle([
         ("FONTSIZE",(0,0),(-1,-1),10), ("ALIGN",(2,0),(2,-1),"RIGHT"),
-        # 👉 Bold Subtotal (row 1) and Taxable Amount (row 3)
+        # Bold Subtotal (row 1) and Taxable Amount (row 3)
         ("FONTNAME",(1,1),(2,1),"Helvetica-Bold"),
         ("FONTNAME",(1,3),(2,3),"Helvetica-Bold"),
         # Existing bold for Grand Total row
@@ -425,8 +428,12 @@ def export_proposal_excel(df_main, df_event, client_name, client_type, quote_no,
         for h in (h1,h2): h.fill = head_fill; h.font = head_font; h.alignment = center; h.border = border_all
         for _, r in df_event.iterrows():
             detail = (str(r.get("Details","")).strip() or str(r.get("Service","")).strip())
-            amt = int(round(parse_inr(r.get("Annual Fees (Rs.)", 0))))
-            ws2.append([detail, amt])
+            raw = str(r.get("Annual Fees (Rs.)","")).strip()
+            if raw == "":
+                ws2.append([detail, None])  # leave blank cell
+            else:
+                amt = int(round(parse_inr(raw)))
+                ws2.append([detail, amt])
         for row in ws2.iter_rows(min_row=2, max_row=ws2.max_row, min_col=1, max_col=2):
             row[1].number_format = '#,##,##0'
             for cell in row: cell.border = border_all
@@ -567,6 +574,19 @@ if submit:
             client_name, client_type, df_app, df_fees,
             selected_accounting=selected_accounting, selected_pt_sub=selected_pt_tc,
         )
+
+        # --- Inject "Consulting Charges" into Event-based (blank fee, user editable) ---
+        consulting_row = pd.DataFrame([{
+            "Service": "Consulting Charges",
+            "Details": "Consulting Charges",
+            "Annual Fees (Rs.)": ""  # blank for user to fill
+        }])
+        if event_df.empty:
+            event_df = consulting_row.copy()
+        else:
+            if not event_df["Details"].astype(str).str.strip().str.casefold().eq("consulting charges").any():
+                event_df = pd.concat([event_df, consulting_row], ignore_index=True)
+
         if main_df.empty and event_df.empty:
             st.warning("No applicable services found for the selected Client Type.")
         else:
@@ -575,9 +595,15 @@ if submit:
             main_df["Include"] = True; main_df["MoveToEvent"] = False
             st.session_state["quote_df"] = main_df
 
+            # format event fees but preserve blanks
             ev = event_df.copy()
             if not ev.empty:
-                ev["Annual Fees (Rs.)"] = ev["Annual Fees (Rs.)"].map(lambda x: money_inr(float(x)))
+                def _fmt_blank_preserve(v):
+                    s = str(v).strip()
+                    if s == "" or s.lower() == "nan": return ""
+                    try: return money_inr(float(str(v).replace(",", "")))
+                    except Exception: return ""
+                ev["Annual Fees (Rs.)"] = ev["Annual Fees (Rs.)"].apply(_fmt_blank_preserve)
                 ev["MoveToMain"] = False
             st.session_state["event_df"] = ev
 
@@ -659,7 +685,7 @@ if st.session_state["editor_active"] and (
                     "MoveToMain": st.column_config.CheckboxColumn(help="Tick and submit to move back to Main table."),
                     "Annual Fees (Rs.)": st.column_config.TextColumn(
                         "Fees (Rs.)",
-                        help="Use Indian format (e.g., 5,000). Only digits and commas allowed.",
+                        help="Use Indian format (e.g., 5,000). Only digits and commas allowed (leave blank if not decided).",
                         validate="^\\s*[\\d,]*\\s*$",
                     ),
                 },
@@ -668,7 +694,13 @@ if st.session_state["editor_active"] and (
             ev_apply = st.form_submit_button("Apply event edits / move to Main")
         if ev_apply:
             event_edited = event_edited.copy()
-            event_edited["Annual Fees (Rs.)"] = event_edited["Annual Fees (Rs.)"].apply(lambda x: money_inr(parse_inr(x)))
+            # normalize to Indian format but keep blanks
+            def _fmt_blank_preserve2(v):
+                s = str(v).strip()
+                if s == "" or s.lower() == "nan": return ""
+                try: return money_inr(float(str(v).replace(",", "")))
+                except Exception: return ""
+            event_edited["Annual Fees (Rs.)"] = event_edited["Annual Fees (Rs.)"].apply(_fmt_blank_preserve2)
             to_main = event_edited[event_edited["MoveToMain"] == True].copy()
             keep_ev = event_edited[event_edited["MoveToMain"] != True].copy()
             if not to_main.empty:
@@ -705,7 +737,7 @@ if st.session_state["editor_active"] and (
             st.rerun()
 
     # Excel
-    if not filtered.empty:
+    if not filtered.empty or not st.session_state["event_df"].empty:
         try:
             excel_bytes = export_proposal_excel(
                 filtered, st.session_state["event_df"],
