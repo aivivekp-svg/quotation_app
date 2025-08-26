@@ -18,7 +18,7 @@ APP_TITLE = "Quotation Generator – V. Purohit & Associates"
 
 CLIENT_TYPES = [
     "PRIVATE LIMITED","PROPRIETORSHIP","INDIVIDUAL","LLP","HUF",
-    "SOCIETY","PARTNERSHIP FIRM","FOREIGN ENTITY","AOP/ BOI","TRUST",
+    "SOCIETY","PARTNERSHIP FIRM","FOREIGN ENTITY","AOP/ BOI","TRUST","LIMITED COMPANY"
 ]
 
 ACCOUNTING_PLANS = ["Monthly Accounting","Quarterly Accounting","Half Yearly Accounting","Annual Accounting"]
