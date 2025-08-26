@@ -16,9 +16,10 @@ from reportlab.platypus import (
 
 APP_TITLE = "Quotation Generator – V. Purohit & Associates"
 
+# (Initial list is ignored later; we rebuild dynamically from matrices after alias duplication)
 CLIENT_TYPES = [
     "PRIVATE LIMITED","PROPRIETORSHIP","INDIVIDUAL","LLP","HUF",
-    "SOCIETY","PARTNERSHIP FIRM","FOREIGN ENTITY","AOP/ BOI","TRUST","LIMITED COMPANY"
+    "SOCIETY","PARTNERSHIP FIRM","FOREIGN ENTITY","AOP/ BOI","TRUST",
 ]
 
 ACCOUNTING_PLANS = ["Monthly Accounting","Quarterly Accounting","Half Yearly Accounting","Annual Accounting"]
@@ -29,6 +30,11 @@ FORCE_EVENT_SUBS = {
     "FILING OF TDS RETURN IN FORM 26QB",
     "FILING OF TDS RETURN IN FORM 26QC",
     "FILING OF TDS RETURN IN FORM 27Q",
+}
+
+# 👉 Alias map: duplicate data for these new types using base type data
+ALIAS_DUPLICATE = {
+    "LIMITED COMPANY": "PRIVATE LIMITED",
 }
 
 ACRONYMS = ["GST","GSTR","PTEC","PTRC","ADT","ROC","TDS","AOC","MGT","26QB","26QC","DIR","MSME","KYC"]
@@ -71,7 +77,6 @@ def service_display_override(raw_upper: str, pretty: str) -> str:
     if raw_upper == "FILING OF GSTR RETURNS": return "Filing of GST Returns"
     return pretty
 
-# Indian format number -> string
 def money_inr(n: float) -> str:
     try: n = float(n)
     except Exception: return "0"
@@ -84,13 +89,11 @@ def money_inr(n: float) -> str:
         if s: res = s + "," + res
     return "-" + res if neg else res
 
-# Parse "1,00,000" -> 100000.0
 def parse_inr(s) -> float:
     if s is None: return 0.0
     if isinstance(s, (int,float)): return float(s)
-    s = str(s).strip()
+    s = str(s).strip().replace(",", "")
     if s == "": return 0.0
-    s = s.replace(",", "")
     try: return float(s)
     except Exception: return 0.0
 
@@ -322,6 +325,10 @@ def make_pdf(client_name: str, client_type: str, quote_no: str,
     t2 = Table([["","",""], *tot_lines], colWidths=col_widths)
     t2.setStyle(TableStyle([
         ("FONTSIZE",(0,0),(-1,-1),10), ("ALIGN",(2,0),(2,-1),"RIGHT"),
+        # 👉 Bold Subtotal (row 1) and Taxable Amount (row 3)
+        ("FONTNAME",(1,1),(2,1),"Helvetica-Bold"),
+        ("FONTNAME",(1,3),(2,3),"Helvetica-Bold"),
+        # Existing bold for Grand Total row
         ("FONTNAME",(0,-1),(-1,-1),"Helvetica-Bold"),
         ("BACKGROUND",(0,-1),(-1,-1),colors.HexColor("#fafafa")),
         ("LINEABOVE",(0,1),(-1,1),0.5,colors.grey),
@@ -334,8 +341,9 @@ def make_pdf(client_name: str, client_type: str, quote_no: str,
     notes = (
         "<b>Note:</b><br/>"
         "1. The fees are exclusive of taxes and out-of-pocket expenses.<br/>"
-        "2. Our scope is limited to the services listed above.<br/>"
-        "3. The above quotation is valid for a period of 30 days."
+        "2. GST 18% extra.<br/>"
+        "3. Our scope is limited to the services listed above.<br/>"
+        "4. The above quotation is valid for a period of 30 days."
     )
     story.append(Paragraph(notes, styles["Normal"])); story.append(Spacer(1,10))
 
@@ -467,10 +475,26 @@ h1 > a, h2 > a, h3 > a, h4 > a {{ display: none !important; }}
 </style>
 """, unsafe_allow_html=True)
 
+# Load matrices
 try:
     df_app, df_fees, source = load_matrices()
 except Exception as e:
     st.error(f"Error loading matrices: {e}"); st.stop()
+
+# ------- Duplicate data for alias client types & rebuild CLIENT_TYPES dynamically ------
+for new_type, base_type in ALIAS_DUPLICATE.items():
+    base = normalize_str(base_type)
+    new  = normalize_str(new_type)
+    rows_app  = df_app[df_app["ClientType"] == base].copy()
+    rows_fees = df_fees[df_fees["ClientType"] == base].copy()
+    if not rows_app.empty:
+        rows_app["ClientType"] = new
+        df_app = pd.concat([df_app, rows_app], ignore_index=True)
+    if not rows_fees.empty:
+        rows_fees["ClientType"] = new
+        df_fees = pd.concat([df_fees, rows_fees], ignore_index=True)
+
+CLIENT_TYPES = sorted(df_app["ClientType"].dropna().unique().tolist())
 
 with st.sidebar:
     st.markdown(
@@ -485,6 +509,7 @@ with st.sidebar:
     st.session_state["letterhead"] = st.checkbox("2) Letterhead mode (watermark logo)", value=st.session_state["letterhead"])
     sig_up = st.file_uploader("3) Signature / Stamp image (optional)", type=["png","jpg","jpeg"])
     if sig_up is not None: st.session_state["sig_bytes"] = sig_up.read()
+    st.caption(f"Client types in data: {', '.join(CLIENT_TYPES)}")
     st.divider()
     with st.expander("Data status", expanded=False):
         service_defs = len(df_app[["Service","SubService"]].drop_duplicates())
@@ -545,7 +570,6 @@ if submit:
         if main_df.empty and event_df.empty:
             st.warning("No applicable services found for the selected Client Type.")
         else:
-            # Convert fees to Indian-formatted strings for editing
             main_df = main_df.copy()
             main_df["Annual Fees (Rs.)"] = main_df["Annual Fees (Rs.)"].map(lambda x: money_inr(float(x)))
             main_df["Include"] = True; main_df["MoveToEvent"] = False
@@ -593,7 +617,6 @@ if st.session_state["editor_active"] and (
             apply_edits = col_m1.form_submit_button("Apply edits")
             apply_and_move = col_m2.form_submit_button("Apply edits & move selected")
         if apply_edits or apply_and_move:
-            # Normalize fees strings to Indian format
             edited = edited.copy()
             edited["Annual Fees (Rs.)"] = edited["Annual Fees (Rs.)"].apply(lambda x: money_inr(parse_inr(x)))
             st.session_state["quote_df"] = edited
@@ -681,7 +704,7 @@ if st.session_state["editor_active"] and (
             st.session_state["quote_df"] = pd.DataFrame(); st.session_state["event_df"] = pd.DataFrame()
             st.rerun()
 
-    # Excel (uses parsed numbers)
+    # Excel
     if not filtered.empty:
         try:
             excel_bytes = export_proposal_excel(
@@ -700,7 +723,7 @@ if st.session_state["editor_active"] and (
         except Exception:
             st.warning("Excel export requires 'openpyxl' on the server.")
 
-    # PDF (uses parsed numbers inside make_pdf helpers)
+    # PDF
     pdf_bytes = make_pdf(
         st.session_state["client_name"], st.session_state["client_type"],
         datetime.now().strftime("QTN-%Y%m%d-%H%M%S") if not st.session_state.get("quote_no") else st.session_state["quote_no"],
