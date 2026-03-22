@@ -509,7 +509,7 @@ def make_pdf(client_name, client_type, quote_no, df_quote, df_event,
         canv.setFillColor(DKGREY)
         canv.drawCentredString(A4[0]/2, 8*mm,
             "Office No. 5, Ground Floor, Adeshwar Arcade, Andheri-Kurla Road, "
-            "Andheri East, Mumbai - 400093  |  Email: info@vpurohit.com  |  +91-8369508539")
+            "Andheri East, Mumbai - 400093  |  Email: office@vpurohit.com  |  +91-9867531510")
         canv.restoreState()
 
     doc   = BaseDocTemplate(buf, pagesize=A4,
@@ -551,7 +551,6 @@ def make_pdf(client_name, client_type, quote_no, df_quote, df_event,
     cl_items.append(Paragraph("TO", ParagraphStyle("LBL", parent=styles["Normal"],
                     fontSize=7, textColor=DKGREY, fontName="Helvetica-Bold")))
     cl_items.append(Paragraph(client_name, bold10))
-    cl_items.append(Paragraph(client_type.title(), normal8))
     if addr.strip():
         cl_items.append(Paragraph(
             ", ".join(l.strip() for l in addr.splitlines() if l.strip()), normal8))
@@ -559,10 +558,10 @@ def make_pdf(client_name, client_type, quote_no, df_quote, df_event,
         cl_items.append(Paragraph(email.strip(), normal8))
     if phone.strip():
         cl_items.append(Paragraph(phone.strip(), normal8))
-    if proposal_start.strip():
-        cl_items.append(Spacer(1, 4))
-        cl_items.append(Paragraph(
-            f"<b>Proposal for:</b> {proposal_start.strip()}", normal9))
+    cl_items.append(Spacer(1, 4))
+    _prop_label = proposal_start.strip() if proposal_start.strip() else get_fy(datetime.now())
+    cl_items.append(Paragraph(
+        f"<b>Proposal for:</b> {_prop_label}", normal9))
 
     client_tbl = Table([[item] for item in cl_items], colWidths=[doc.width])
     client_tbl.setStyle(TableStyle([
@@ -651,8 +650,8 @@ def make_pdf(client_name, client_type, quote_no, df_quote, df_event,
     notes_rows = [
         [Paragraph("Notes &amp; Terms", note_bold)],
         [Paragraph("1.  Our scope of engagement is strictly limited to the services "
-                   "enumerated above; any additional services shall be subject to a "
-                   "separate arrangement.", note_style)],
+                   "enumerated above; any additional services shall be billed separately.",
+                   note_style)],
         [Paragraph(f"2.  This quotation is valid for <b>15 days</b> from the date of "
                    f"generation, i.e., up to <b>{validity_date()}</b>.", note_style)],
         [Paragraph("3.  Kindly sign and return this proposal as confirmation of your "
