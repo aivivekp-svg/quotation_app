@@ -1120,7 +1120,7 @@ with t1:
                 edited = st.data_editor(
                     st.session_state["quote_df"],
                     use_container_width=True,
-                    disabled=["Service","Details"],
+                    disabled=["Service"],
                     column_order=["Order","Include","MoveToEvent","Service","Details","Annual Fees (Rs.)"],
                     column_config={
                         "Order": st.column_config.NumberColumn(
@@ -1180,14 +1180,18 @@ with t1:
             with st.form("event_form"):
                 ev_ed = st.data_editor(
                     ev_df, use_container_width=True,
-                    disabled=["Service","Details"],
+                    disabled=[],
                     column_order=["MoveToMain","Service","Details","Annual Fees (Rs.)"],
                     column_config={
                         "MoveToMain": st.column_config.CheckboxColumn("→ Main"),
+                        "Service": st.column_config.TextColumn(
+                            "Service", help="Type a service name for new rows."),
+                        "Details": st.column_config.TextColumn(
+                            "Details", help="Edit or add description."),
                         "Annual Fees (Rs.)": st.column_config.TextColumn(
                             "Fees (Rs.)", validate=r"^\s*[\d,]*\s*$"),
                     },
-                    num_rows="fixed", key="eeditor", hide_index=True, height=280)
+                    num_rows="dynamic", key="eeditor", hide_index=True, height=300)
                 if st.form_submit_button("✅ Apply Event Edits", use_container_width=True):
                     def _ef(v):
                         s = str(v).strip()
