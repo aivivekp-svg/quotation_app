@@ -4,3 +4,4 @@ reportlab
 openpyxl
 gspread
 google-auth
+streamlit-gsheets-connection
