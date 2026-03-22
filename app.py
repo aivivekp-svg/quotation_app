@@ -434,7 +434,7 @@ def make_pdf(client_name, client_type, quote_no, df_quote, df_event,
                               fontName="Helvetica-Bold", fontSize=9, textColor=colors.white)
 
     HEADER_H = 30 * mm   # height of blue top band
-    FOOTER_H = 22 * mm
+    FOOTER_H = 14 * mm
 
     def on_page(canv, doc_):
         pw, ph = A4
@@ -448,38 +448,35 @@ def make_pdf(client_name, client_type, quote_no, df_quote, df_event,
         canv.setFillColor(BB)
         canv.rect(0, ph - HEADER_H, pw, HEADER_H, stroke=0, fill=1)
 
-        # Logo in header (left side)
-        logo_drawn = False
+        # Logo — centred horizontally in header
+        logo_w_drawn = 0
         for nm in ("logo.png","logo.jpg","logo.jpeg"):
             if os.path.exists(nm):
                 try:
                     ir  = ImageReader(nm)
                     ow, oh = ir.getSize()
-                    target_h = HEADER_H - 8*mm
-                    r   = target_h / oh
+                    target_h = HEADER_H - 10*mm
+                    r        = target_h / oh
                     target_w = ow * r
+                    logo_x   = (pw - target_w) / 2
                     canv.drawImage(nm,
-                                   6*mm,
-                                   ph - HEADER_H + 4*mm,
+                                   logo_x,
+                                   ph - HEADER_H + 5*mm,
                                    width=target_w, height=target_h,
                                    preserveAspectRatio=True, mask="auto")
-                    logo_drawn = True
-                    logo_right = 6*mm + target_w + 4*mm
+                    logo_w_drawn = target_w
                 except Exception:
-                    logo_right = 6*mm
+                    pass
                 break
-        else:
-            logo_right = 6*mm
 
-        # Firm name and subtitle in header
-        canv.setFillColor(colors.white)
-        canv.setFont("Helvetica-Bold", 14)
-        canv.drawString(logo_right, ph - HEADER_H + 17*mm, "V. Purohit & Associates")
-        canv.setFont("Helvetica", 9)
-        canv.setFillColor(colors.HexColor("#CCE0FF"))
-        canv.drawString(logo_right, ph - HEADER_H + 11*mm, "Chartered Accountants")
-        canv.setFont("Helvetica", 8)
-        canv.drawString(logo_right, ph - HEADER_H + 6*mm, "Annual Fees Proposal")
+        # If no logo, draw firm name + designation centred in header
+        if not logo_w_drawn:
+            canv.setFillColor(colors.white)
+            canv.setFont("Helvetica-Bold", 14)
+            canv.drawCentredString(pw/2, ph - HEADER_H + 17*mm, "V. Purohit & Associates")
+            canv.setFont("Helvetica", 9)
+            canv.setFillColor(colors.HexColor("#CCE0FF"))
+            canv.drawCentredString(pw/2, ph - HEADER_H + 10*mm, "Chartered Accountants")
 
         # Watermark logo (letterhead mode)
         if letterhead:
@@ -510,14 +507,9 @@ def make_pdf(client_name, client_type, quote_no, df_quote, df_event,
         canv.saveState()
         canv.setFont("Helvetica", 7.5)
         canv.setFillColor(DKGREY)
-        canv.drawCentredString(A4[0]/2, 13*mm,
+        canv.drawCentredString(A4[0]/2, 8*mm,
             "Office No. 5, Ground Floor, Adeshwar Arcade, Andheri-Kurla Road, "
-            "Andheri East, Mumbai - 400093")
-        canv.drawCentredString(A4[0]/2, 9*mm,
-            "Email: info@vpurohit.com  |  Contact: +91-8369508539")
-        canv.setFont("Helvetica", 7)
-        canv.setFillColor(colors.HexColor("#999999"))
-        canv.drawRightString(A4[0]-14*mm, 5*mm, f"Page {canv.getPageNumber()}")
+            "Andheri East, Mumbai - 400093  |  Email: info@vpurohit.com  |  +91-8369508539")
         canv.restoreState()
 
     doc   = BaseDocTemplate(buf, pagesize=A4,
@@ -545,49 +537,41 @@ def make_pdf(client_name, client_type, quote_no, df_quote, df_event,
         ("RIGHTPADDING",  (1,0),(1,0), 8),
     ]))
     story.append(ref_bar)
-    story.append(Spacer(1, 6))
+    story.append(Spacer(1, 5))
+    story.append(Paragraph(
+        "Quotation for Professional Fees",
+        ParagraphStyle("QH", parent=styles["Normal"],
+                       fontName="Helvetica-Bold", fontSize=12,
+                       alignment=TA_CENTER, textColor=BB,
+                       spaceAfter=4)))
+    story.append(Spacer(1, 4))
 
-    # ── Client info card ───────────────────────────────────────────────────────
-    lc, rc = [], []
-
-    lc.append(Paragraph("TO", ParagraphStyle("LBL", parent=styles["Normal"],
-              fontSize=7, textColor=DKGREY, fontName="Helvetica-Bold")))
-    lc.append(Paragraph(client_name, bold10))
-    lc.append(Paragraph(client_type.title(), normal8))
+    # ── Client info card — single column, no Proposal Summary box ───────────────
+    cl_items = []
+    cl_items.append(Paragraph("TO", ParagraphStyle("LBL", parent=styles["Normal"],
+                    fontSize=7, textColor=DKGREY, fontName="Helvetica-Bold")))
+    cl_items.append(Paragraph(client_name, bold10))
+    cl_items.append(Paragraph(client_type.title(), normal8))
     if addr.strip():
-        lc.append(Paragraph(
+        cl_items.append(Paragraph(
             ", ".join(l.strip() for l in addr.splitlines() if l.strip()), normal8))
     if email.strip():
-        lc.append(Paragraph(email.strip(), normal8))
+        cl_items.append(Paragraph(email.strip(), normal8))
     if phone.strip():
-        lc.append(Paragraph(phone.strip(), normal8))
-
-    rc.append(Paragraph("PROPOSAL SUMMARY", ParagraphStyle("LBL2",parent=styles["Normal"],
-              fontSize=7, textColor=DKGREY, fontName="Helvetica-Bold")))
-    rc.append(Paragraph(
-        f"Rs. {money_inr(grand)}",
-        ParagraphStyle("GTV", parent=styles["Normal"],
-                       fontName="Helvetica-Bold", fontSize=16, textColor=BB)))
-    rc.append(Paragraph("Total (incl. GST)", normal8))
+        cl_items.append(Paragraph(phone.strip(), normal8))
     if proposal_start.strip():
-        rc.append(Spacer(1,4))
-        rc.append(Paragraph(f"<b>Proposed Start:</b> {proposal_start.strip()}", normal8))
+        cl_items.append(Spacer(1, 4))
+        cl_items.append(Paragraph(
+            f"<b>Proposal for:</b> {proposal_start.strip()}", normal9))
 
-    n = max(len(lc), len(rc))
-    lc += [Spacer(1,2)]*(n-len(lc))
-    rc += [Spacer(1,2)]*(n-len(rc))
-
-    client_tbl = Table([[lc[i], rc[i]] for i in range(n)],
-                        colWidths=[doc.width*0.60, doc.width*0.40])
+    client_tbl = Table([[item] for item in cl_items], colWidths=[doc.width])
     client_tbl.setStyle(TableStyle([
         ("VALIGN",        (0,0),(-1,-1), "TOP"),
-        ("LEFTPADDING",   (0,0),(-1,-1), 8),
-        ("RIGHTPADDING",  (0,0),(-1,-1), 8),
-        ("TOPPADDING",    (0,0),(-1,-1), 6),
-        ("BOTTOMPADDING", (0,0),(-1,-1), 6),
-        ("BACKGROUND",    (0,0),(0,-1), colors.HexColor("#F8FAFD")),
-        ("BACKGROUND",    (1,0),(1,-1), LIGHT),
-        ("LINEAFTER",     (0,0),(0,-1), 0.5, BORDER),
+        ("LEFTPADDING",   (0,0),(-1,-1), 10),
+        ("RIGHTPADDING",  (0,0),(-1,-1), 10),
+        ("TOPPADDING",    (0,0),(-1,-1), 3),
+        ("BOTTOMPADDING", (0,0),(-1,-1), 3),
+        ("BACKGROUND",    (0,0),(-1,-1), colors.HexColor("#F8FAFD")),
         ("BOX",           (0,0),(-1,-1), 0.5, BORDER),
     ]))
     story.append(client_tbl)
@@ -660,23 +644,33 @@ def make_pdf(client_name, client_type, quote_no, df_quote, df_event,
     story.append(Spacer(1, 8))
 
     # ── Notes ──────────────────────────────────────────────────────────────────
-    notes_data = [[Paragraph(
-        "<b>Notes &amp; Terms:</b>  "
-        "1. Our scope of engagement is strictly limited to the services enumerated above; "
-        "any additional services shall be subject to a separate arrangement.  "
-        f"2. This quotation is valid for <b>15 days</b> from date of generation (i.e. up to <b>{validity_date()}</b>).  "
-        "3. Kindly sign and return this proposal as confirmation of your acceptance.  "
-        "4. Refer to the <b>Event-Based Charges</b> schedule overleaf for fees on additional services.",
-        ParagraphStyle("NP", parent=styles["Normal"], fontSize=8, textColor=DKGREY,
-                       leading=12))]]
-    notes_tbl = Table(notes_data, colWidths=[doc.width])
+    note_style = ParagraphStyle("NP", parent=styles["Normal"], fontSize=8,
+                                 textColor=DKGREY, leading=13)
+    note_bold  = ParagraphStyle("NPB", parent=styles["Normal"], fontSize=8,
+                                 textColor=DKGREY, fontName="Helvetica-Bold", leading=13)
+    notes_rows = [
+        [Paragraph("Notes &amp; Terms", note_bold)],
+        [Paragraph("1.  Our scope of engagement is strictly limited to the services "
+                   "enumerated above; any additional services shall be subject to a "
+                   "separate arrangement.", note_style)],
+        [Paragraph(f"2.  This quotation is valid for <b>15 days</b> from the date of "
+                   f"generation, i.e., up to <b>{validity_date()}</b>.", note_style)],
+        [Paragraph("3.  Kindly sign and return this proposal as confirmation of your "
+                   "acceptance of the terms and fees set out herein.", note_style)],
+        [Paragraph("4.  Please refer to the <b>Event-Based Charges</b> schedule appended "
+                   "hereto for fees applicable to additional or incidental services.",
+                   note_style)],
+    ]
+    notes_tbl = Table(notes_rows, colWidths=[doc.width])
     notes_tbl.setStyle(TableStyle([
         ("BACKGROUND",    (0,0),(-1,-1), colors.HexColor("#FFFDF0")),
-        ("LEFTPADDING",   (0,0),(-1,-1), 10),
+        ("LEFTPADDING",   (0,0),(-1,-1), 12),
         ("RIGHTPADDING",  (0,0),(-1,-1), 10),
-        ("TOPPADDING",    (0,0),(-1,-1), 6),
-        ("BOTTOMPADDING", (0,0),(-1,-1), 6),
-        ("LINEBEFORE",    (0,0),(0,-1), 3, colors.HexColor("#FFC107")),
+        ("TOPPADDING",    (0,0),(-1,-1), 3),
+        ("BOTTOMPADDING", (0,0),(-1,-1), 3),
+        ("TOPPADDING",    (0,0),(0,0),   5),
+        ("BOTTOMPADDING", (0,-1),(0,-1), 5),
+        ("LINEBEFORE",    (0,0),(0,-1),  3, colors.HexColor("#FFC107")),
         ("BOX",           (0,0),(-1,-1), 0.4, BORDER),
     ]))
     story.append(notes_tbl)
