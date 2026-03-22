@@ -1203,14 +1203,16 @@ with t1:
                     ev_ed["MoveToMain"] = ev_ed["MoveToMain"].fillna(False).astype(bool)
                     to_main = ev_ed[ev_ed["MoveToMain"]].copy()
                     keep_ev = ev_ed[~ev_ed["MoveToMain"]].copy()
-                    if not to_main.empty:
-                        add = to_main[["Service","Details","Annual Fees (Rs.)"]].copy()
-                        add["Include"] = True; add["MoveToEvent"] = False
-                        st.session_state["quote_df"] = pd.concat(
-                            [st.session_state["quote_df"], add], ignore_index=True)
-                        st.success(f"Moved {len(add)} row(s) to Main.")
                     keep_ev["MoveToMain"] = False
                     st.session_state["event_df"] = keep_ev
+                    if not to_main.empty:
+                        add = to_main[["Service","Details","Annual Fees (Rs.)"]].copy()
+                        add["Include"]     = True
+                        add["MoveToEvent"] = False
+                        add["Order"]       = None
+                        st.session_state["quote_df"] = pd.concat(
+                            [st.session_state["quote_df"], add], ignore_index=True)
+                    st.rerun()
 
         # Totals
         st.markdown("<hr class='section-divider'>", unsafe_allow_html=True)
@@ -1484,7 +1486,7 @@ with t3:
                         "quote_saved":   False,
                         "proposal_start":get_fy(datetime.now()),
                     })
-                    st.success("✅ Loaded! Switch to the '📄 Generate Quotation' tab to review.")
+                    st.rerun()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
