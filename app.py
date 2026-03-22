@@ -379,7 +379,6 @@ def prep_editor_df(df: pd.DataFrame) -> pd.DataFrame:
         lambda x: money_inr(float(x)) if str(x).strip() not in ("","nan") else "")
     out["Include"]     = False   # all deselected by default
     out["MoveToEvent"] = False
-    out["Order"]       = range(1, len(out) + 1)
     return out
 
 
@@ -411,72 +410,100 @@ def make_pdf(client_name, client_type, quote_no, df_quote, df_event,
              letterhead=False, addr="", email="", phone="",
              proposal_start="", discount_reason=""):
     import os
-    from reportlab.platypus import Image, HRFlowable
+    from reportlab.platypus import Image
     from reportlab.lib.utils import ImageReader
     from reportlab.lib.enums import TA_RIGHT, TA_LEFT
 
     buf    = io.BytesIO()
     BB     = colors.HexColor(BRAND_BLUE_HEX)
     LIGHT  = colors.HexColor(BRAND_LIGHT)
-    GREY   = colors.HexColor("#F8F9FA")
-    DKGREY = colors.HexColor("#4A4A4A")
     BORDER = colors.HexColor("#DEE2E6")
+    DKGREY = colors.HexColor("#4A4A4A")
 
-    styles = getSampleStyleSheet()
-    hc = ParagraphStyle("HC", parent=styles["Normal"],
-                         alignment=TA_CENTER, fontName="Helvetica-Bold", fontSize=9)
-    hn = ParagraphStyle("HN", parent=styles["Normal"],
-                         fontName="Helvetica-Bold", fontSize=9)
-    normal9 = ParagraphStyle("N9", parent=styles["Normal"], fontSize=9)
-    normal8 = ParagraphStyle("N8", parent=styles["Normal"], fontSize=8,
-                              textColor=DKGREY)
-    bold9   = ParagraphStyle("B9", parent=styles["Normal"],
-                              fontName="Helvetica-Bold", fontSize=9)
-    right9  = ParagraphStyle("R9", parent=styles["Normal"],
-                              alignment=TA_RIGHT, fontSize=9)
-    bold10  = ParagraphStyle("B10", parent=styles["Normal"],
-                              fontName="Helvetica-Bold", fontSize=10)
-    title_s = ParagraphStyle("TT", parent=styles["Normal"],
-                              fontName="Helvetica-Bold", fontSize=15,
-                              textColor=colors.white, alignment=TA_CENTER,
-                              spaceAfter=2)
-    sub_s   = ParagraphStyle("SS", parent=styles["Normal"],
-                              fontSize=9, textColor=colors.HexColor("#CCE0FF"),
-                              alignment=TA_CENTER)
+    styles  = getSampleStyleSheet()
+    normal9 = ParagraphStyle("N9",  parent=styles["Normal"], fontSize=9)
+    normal8 = ParagraphStyle("N8",  parent=styles["Normal"], fontSize=8, textColor=DKGREY)
+    bold9   = ParagraphStyle("B9",  parent=styles["Normal"], fontName="Helvetica-Bold", fontSize=9)
+    bold10  = ParagraphStyle("B10", parent=styles["Normal"], fontName="Helvetica-Bold", fontSize=10)
+    right9  = ParagraphStyle("R9",  parent=styles["Normal"], alignment=TA_RIGHT, fontSize=9)
+    hc      = ParagraphStyle("HC",  parent=styles["Normal"], alignment=TA_CENTER,
+                              fontName="Helvetica-Bold", fontSize=9, textColor=colors.white)
+
+    HEADER_H = 30 * mm   # height of blue top band
+    FOOTER_H = 22 * mm
 
     def on_page(canv, doc_):
         pw, ph = A4
         canv.saveState()
-        # White background
+
+        # White base
         canv.setFillColor(colors.white)
         canv.rect(0, 0, pw, ph, stroke=0, fill=1)
-        # Top branded header band
+
+        # Blue header band
         canv.setFillColor(BB)
-        canv.rect(0, ph - 28*mm, pw, 28*mm, stroke=0, fill=1)
-        # Subtle bottom band
-        canv.setFillColor(colors.HexColor("#F0F4F8"))
-        canv.rect(0, 0, pw, 22*mm, stroke=0, fill=1)
-        # Left accent bar
-        canv.setFillColor(colors.HexColor("#1A6BBF"))
-        canv.rect(0, 22*mm, 3*mm, ph-50*mm, stroke=0, fill=1)
+        canv.rect(0, ph - HEADER_H, pw, HEADER_H, stroke=0, fill=1)
+
+        # Logo in header (left side)
+        logo_drawn = False
+        for nm in ("logo.png","logo.jpg","logo.jpeg"):
+            if os.path.exists(nm):
+                try:
+                    ir  = ImageReader(nm)
+                    ow, oh = ir.getSize()
+                    target_h = HEADER_H - 8*mm
+                    r   = target_h / oh
+                    target_w = ow * r
+                    canv.drawImage(nm,
+                                   6*mm,
+                                   ph - HEADER_H + 4*mm,
+                                   width=target_w, height=target_h,
+                                   preserveAspectRatio=True, mask="auto")
+                    logo_drawn = True
+                    logo_right = 6*mm + target_w + 4*mm
+                except Exception:
+                    logo_right = 6*mm
+                break
+        else:
+            logo_right = 6*mm
+
+        # Firm name and subtitle in header
+        canv.setFillColor(colors.white)
+        canv.setFont("Helvetica-Bold", 14)
+        canv.drawString(logo_right, ph - HEADER_H + 17*mm, "V. Purohit & Associates")
+        canv.setFont("Helvetica", 9)
+        canv.setFillColor(colors.HexColor("#CCE0FF"))
+        canv.drawString(logo_right, ph - HEADER_H + 11*mm, "Chartered Accountants")
+        canv.setFont("Helvetica", 8)
+        canv.drawString(logo_right, ph - HEADER_H + 6*mm, "Annual Fees Proposal")
+
+        # Watermark logo (letterhead mode)
         if letterhead:
             try:
-                for n in ("logo.png","logo.jpg","logo.jpeg"):
-                    if os.path.exists(n):
-                        ir = ImageReader(n); ow,oh = ir.getSize()
-                        tw = pw - 80*mm; r = tw/ow; th = oh*r
-                        if hasattr(canv,"setFillAlpha"): canv.setFillAlpha(0.06)
-                        canv.drawImage(n,(pw-tw)/2,(ph-th)/2,
-                                       width=tw,height=th,
-                                       preserveAspectRatio=True,mask="auto")
+                for nm in ("logo.png","logo.jpg","logo.jpeg"):
+                    if os.path.exists(nm):
+                        ir = ImageReader(nm); ow2, oh2 = ir.getSize()
+                        tw = pw - 60*mm; r2 = tw/ow2; th2 = oh2*r2
+                        if hasattr(canv,"setFillAlpha"): canv.setFillAlpha(0.05)
+                        canv.drawImage(nm, (pw-tw)/2, (ph-th2)/2,
+                                       width=tw, height=th2,
+                                       preserveAspectRatio=True, mask="auto")
                         if hasattr(canv,"setFillAlpha"): canv.setFillAlpha(1)
                         break
             except Exception: pass
+
+        # Light grey footer band
+        canv.setFillColor(colors.HexColor("#F5F7FA"))
+        canv.rect(0, 0, pw, FOOTER_H, stroke=0, fill=1)
+        # Thin top border on footer
+        canv.setStrokeColor(BORDER)
+        canv.setLineWidth(0.5)
+        canv.line(0, FOOTER_H, pw, FOOTER_H)
+
         canv.restoreState()
 
     def on_page_end(canv, doc_):
         canv.saveState()
-        # Footer text
         canv.setFont("Helvetica", 7.5)
         canv.setFillColor(DKGREY)
         canv.drawCentredString(A4[0]/2, 13*mm,
@@ -486,185 +513,132 @@ def make_pdf(client_name, client_type, quote_no, df_quote, df_event,
             "Email: info@vpurohit.com  |  Contact: +91-8369508539")
         canv.setFont("Helvetica", 7)
         canv.setFillColor(colors.HexColor("#999999"))
-        canv.drawRightString(A4[0]-18*mm, 5*mm, f"Page {canv.getPageNumber()}")
+        canv.drawRightString(A4[0]-14*mm, 5*mm, f"Page {canv.getPageNumber()}")
         canv.restoreState()
 
     doc   = BaseDocTemplate(buf, pagesize=A4,
                             leftMargin=14*mm, rightMargin=14*mm,
-                            topMargin=32*mm, bottomMargin=26*mm)
+                            topMargin=HEADER_H + 6*mm,
+                            bottomMargin=FOOTER_H + 4*mm)
     frame = Frame(doc.leftMargin, doc.bottomMargin,
                   doc.width, doc.height, id="normal")
     doc.addPageTemplates(PageTemplate(id="main", frames=[frame],
                                       onPage=on_page, onPageEnd=on_page_end))
     story = []
 
-    # ── Header content (sits inside top band via negative spacing trick) ──
-    # Since onPage draws the band, we just add the text at top of story
-    story.append(Spacer(1, 2))
-
-    # Firm name in header — white text over blue band drawn by onPage
-    # We use a table to position logo left + firm name right
-    hdr_left = []
-    for nm in ("logo.png","logo.jpg","logo.jpeg"):
-        if os.path.exists(nm) and not letterhead:
-            try:
-                ir = ImageReader(nm); ow,oh = ir.getSize()
-                r  = min(18*mm/ow, 18*mm/oh)
-                hdr_left = [Image(nm, width=ow*r, height=oh*r)]
-            except Exception:
-                pass
-            break
-
-    hdr_right = [
-        Paragraph("V. Purohit &amp; Associates", title_s),
-        Paragraph("Chartered Accountants", sub_s),
-    ]
-
-    hdr_tbl = Table(
-        [[hdr_left or [Paragraph("", normal9)], hdr_right]],
-        colWidths=[30*mm, doc.width - 30*mm]
-    )
-    hdr_tbl.setStyle(TableStyle([
-        ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
-        ("LEFTPADDING",  (0,0), (-1,-1), 0),
-        ("RIGHTPADDING", (0,0), (-1,-1), 0),
-        ("TOPPADDING",   (0,0), (-1,-1), 0),
-        ("BOTTOMPADDING",(0,0), (-1,-1), 0),
+    # ── Quotation ref bar ──────────────────────────────────────────────────────
+    ref_bar = Table([[
+        Paragraph(f"<b>Ref. No.:</b> {quote_no}", bold9),
+        Paragraph(f"<b>Date:</b> {datetime.now().strftime('%d %B %Y')}", bold9),
+    ]], colWidths=[doc.width/2, doc.width/2])
+    ref_bar.setStyle(TableStyle([
+        ("BACKGROUND",    (0,0),(-1,-1), LIGHT),
+        ("TOPPADDING",    (0,0),(-1,-1), 5),
+        ("BOTTOMPADDING", (0,0),(-1,-1), 5),
+        ("LEFTPADDING",   (0,0),(-1,-1), 8),
+        ("BOX",           (0,0),(-1,-1), 0.5, BB),
+        ("ALIGN",         (1,0),(1,0), "RIGHT"),
+        ("RIGHTPADDING",  (1,0),(1,0), 8),
     ]))
-    story.append(hdr_tbl)
-    story.append(Spacer(1, 8))
+    story.append(ref_bar)
+    story.append(Spacer(1, 6))
 
-    # ── Proposal title bar ──
-    title_bar = Table(
-        [[Paragraph("ANNUAL FEES PROPOSAL", ParagraphStyle(
-            "PT", parent=styles["Normal"],
-            fontName="Helvetica-Bold", fontSize=11,
-            textColor=BB, alignment=TA_CENTER))]],
-        colWidths=[doc.width]
-    )
-    title_bar.setStyle(TableStyle([
-        ("BACKGROUND", (0,0), (-1,-1), LIGHT),
-        ("TOPPADDING",    (0,0),(-1,-1), 7),
-        ("BOTTOMPADDING", (0,0),(-1,-1), 7),
-        ("BOX", (0,0),(-1,-1), 0.8, BB),
-    ]))
-    story.append(title_bar)
-    story.append(Spacer(1, 8))
-
-    # ── Meta info — two column card ──
+    # ── Client info card ───────────────────────────────────────────────────────
     lc, rc = [], []
-    lc.append(Paragraph(f"<b>Client Name</b>", normal8))
+
+    lc.append(Paragraph("TO", ParagraphStyle("LBL", parent=styles["Normal"],
+              fontSize=7, textColor=DKGREY, fontName="Helvetica-Bold")))
     lc.append(Paragraph(client_name, bold10))
-    lc.append(Spacer(1, 4))
-    lc.append(Paragraph(f"<b>Entity Type:</b> {client_type}", normal9))
+    lc.append(Paragraph(client_type.title(), normal8))
     if addr.strip():
         lc.append(Paragraph(
-            "<b>Address:</b> " + ", ".join(l.strip() for l in addr.splitlines() if l.strip()),
-            normal9))
+            ", ".join(l.strip() for l in addr.splitlines() if l.strip()), normal8))
     if email.strip():
-        lc.append(Paragraph(f"<b>Email:</b> {email.strip()}", normal9))
+        lc.append(Paragraph(email.strip(), normal8))
     if phone.strip():
-        lc.append(Paragraph(f"<b>Phone:</b> {phone.strip()}", normal9))
+        lc.append(Paragraph(phone.strip(), normal8))
 
-    rc.append(Paragraph("<b>Quotation Details</b>", normal8))
-    rc.append(Spacer(1, 2))
-    rc.append(Paragraph(f"<b>Ref. No.:</b>  {quote_no}", bold9))
-    rc.append(Paragraph(f"<b>Date:</b>  {datetime.now().strftime('%d %B %Y')}", normal9))
-    if proposal_start.strip():
-        rc.append(Paragraph(f"<b>Proposed Start:</b>  {proposal_start.strip()}", normal9))
-    rc.append(Spacer(1, 4))
-    rc.append(Paragraph(
-        f"<b>Total (incl. GST):</b>",  normal8))
+    rc.append(Paragraph("PROPOSAL SUMMARY", ParagraphStyle("LBL2",parent=styles["Normal"],
+              fontSize=7, textColor=DKGREY, fontName="Helvetica-Bold")))
     rc.append(Paragraph(
         f"Rs. {money_inr(grand)}",
-        ParagraphStyle("GT", parent=styles["Normal"],
-                       fontName="Helvetica-Bold", fontSize=13, textColor=BB)))
+        ParagraphStyle("GTV", parent=styles["Normal"],
+                       fontName="Helvetica-Bold", fontSize=16, textColor=BB)))
+    rc.append(Paragraph("Total (incl. GST)", normal8))
+    if proposal_start.strip():
+        rc.append(Spacer(1,4))
+        rc.append(Paragraph(f"<b>Proposed Start:</b> {proposal_start.strip()}", normal8))
 
     n = max(len(lc), len(rc))
-    lc += [Spacer(1,2)] * (n - len(lc))
-    rc += [Spacer(1,2)] * (n - len(rc))
+    lc += [Spacer(1,2)]*(n-len(lc))
+    rc += [Spacer(1,2)]*(n-len(rc))
 
-    meta_tbl = Table([[lc[i], rc[i]] for i in range(n)],
-                      colWidths=[doc.width*0.58, doc.width*0.42])
-    meta_tbl.setStyle(TableStyle([
-        ("VALIGN",        (0,0),(-1,-1),"TOP"),
+    client_tbl = Table([[lc[i], rc[i]] for i in range(n)],
+                        colWidths=[doc.width*0.60, doc.width*0.40])
+    client_tbl.setStyle(TableStyle([
+        ("VALIGN",        (0,0),(-1,-1), "TOP"),
         ("LEFTPADDING",   (0,0),(-1,-1), 8),
         ("RIGHTPADDING",  (0,0),(-1,-1), 8),
         ("TOPPADDING",    (0,0),(-1,-1), 6),
         ("BOTTOMPADDING", (0,0),(-1,-1), 6),
         ("BACKGROUND",    (0,0),(0,-1), colors.HexColor("#F8FAFD")),
         ("BACKGROUND",    (1,0),(1,-1), LIGHT),
-        ("BOX",           (0,0),(-1,-1), 0.8, BORDER),
-        ("LINEAFTER",     (0,0),(0,-1), 0.6, BORDER),
-        ("ROUNDEDCORNERS",[3]),
+        ("LINEAFTER",     (0,0),(0,-1), 0.5, BORDER),
+        ("BOX",           (0,0),(-1,-1), 0.5, BORDER),
     ]))
-    story.append(meta_tbl)
-    story.append(Spacer(1, 10))
+    story.append(client_tbl)
+    story.append(Spacer(1, 8))
 
-    # ── Section heading ──
-    story.append(Paragraph(
-        "SCOPE OF SERVICES &amp; FEES",
-        ParagraphStyle("SH", parent=styles["Normal"],
-                       fontName="Helvetica-Bold", fontSize=8,
-                       textColor=DKGREY, spaceAfter=4)))
-
-    # ── Fees table — use row order as-is (already sorted by Order) ──
+    # ── Fees table ─────────────────────────────────────────────────────────────
     trows = _grouped_rows(df_quote)
-    trows[0] = [
-        Paragraph("<b>Service</b>", hc),
-        Paragraph("<b>Description / Details</b>", hc),
-        Paragraph("<b>Annual Fees</b><br/><b>(Rs.)</b>", hc),
-    ]
-    cw = [55*mm, 85*mm, 33*mm]
+    trows[0] = [Paragraph(h, hc) for h in
+                ["Service", "Description / Details", "Annual Fees (Rs.)"]]
+    cw = [55*mm, 87*mm, 31*mm]
     ft = Table(trows, colWidths=cw, repeatRows=1)
     ft.setStyle(TableStyle([
-        # Header row
         ("BACKGROUND",    (0,0),(-1,0), BB),
-        ("TEXTCOLOR",     (0,0),(-1,0), colors.white),
-        ("FONTNAME",      (0,0),(-1,0), "Helvetica-Bold"),
         ("FONTSIZE",      (0,0),(-1,0), 9),
-        ("TOPPADDING",    (0,0),(-1,0), 7),
-        ("BOTTOMPADDING", (0,0),(-1,0), 7),
-        ("ALIGN",         (0,0),(-1,0), "CENTER"),
-        # Data rows
+        ("TOPPADDING",    (0,0),(-1,0), 6),
+        ("BOTTOMPADDING", (0,0),(-1,0), 6),
         ("FONTSIZE",      (0,1),(-1,-1), 9),
         ("TOPPADDING",    (0,1),(-1,-1), 5),
         ("BOTTOMPADDING", (0,1),(-1,-1), 5),
-        ("LEFTPADDING",   (0,1),(-1,-1), 6),
+        ("LEFTPADDING",   (0,0),(-1,-1), 6),
         ("ALIGN",         (2,1),(2,-1), "RIGHT"),
         ("VALIGN",        (0,0),(-1,-1), "MIDDLE"),
-        ("ROWBACKGROUNDS",(0,1),(-1,-1), [colors.white, colors.HexColor("#F4F7FB")]),
+        ("ROWBACKGROUNDS",(0,1),(-1,-1),[colors.white, colors.HexColor("#F4F7FB")]),
         ("INNERGRID",     (0,1),(-1,-1), 0.3, BORDER),
-        ("LINEBELOW",     (0,0),(-1,0), 0, colors.white),
-        ("BOX",           (0,0),(-1,-1), 0.8, BORDER),
-        # Left accent on service column
-        ("LINEAFTER",     (0,0),(0,-1), 0.5, BORDER),
+        ("LINEAFTER",     (0,0),(0,-1), 0.4, BORDER),
+        ("BOX",           (0,0),(-1,-1), 0.6, BORDER),
     ]))
     story.append(ft)
-    story.append(Spacer(1, 6))
+    story.append(Spacer(1, 4))
 
-    # ── Totals ──
+    # ── Totals ─────────────────────────────────────────────────────────────────
     disc_lbl = f"Discount ({discount_pct:.0f}%)" + (
         f" — {discount_reason}" if discount_reason and discount_reason.strip() else "")
-    tot_data = [
-        ["", "", ""],   # spacer row
-        ["", Paragraph("Subtotal", normal9), Paragraph(money_inr(subtotal), right9)],
-        ["", Paragraph(disc_lbl,  normal9),  Paragraph(f"({money_inr(discount_amt)})", right9)]
-            if discount_amt > 0 else
+    tot_rows = [
+        ["", Paragraph("Subtotal", normal9),
+             Paragraph(money_inr(subtotal), right9)],
+        ["", Paragraph(disc_lbl, normal9),
+             Paragraph(f"({money_inr(discount_amt)})", right9)]
+             if discount_amt > 0 else
         ["", Paragraph("Discount", normal9), Paragraph("Nil", right9)],
         ["", Paragraph("Taxable Amount", bold9),
-             Paragraph(money_inr(subtotal - discount_amt),
-                       ParagraphStyle("RB9",parent=styles["Normal"],
+             Paragraph(money_inr(subtotal-discount_amt),
+                       ParagraphStyle("RB",parent=styles["Normal"],
                                       alignment=TA_RIGHT,fontName="Helvetica-Bold",fontSize=9))],
-        ["", Paragraph(f"GST @ {GST_RATE}%", normal9), Paragraph(money_inr(gst_amt), right9)],
-        ["", Paragraph("GRAND TOTAL", ParagraphStyle("GT2",parent=styles["Normal"],
-                        fontName="Helvetica-Bold",fontSize=10,textColor=BB)),
+        ["", Paragraph(f"GST @ {GST_RATE}%", normal9),
+             Paragraph(money_inr(gst_amt), right9)],
+        ["", Paragraph("GRAND TOTAL",
+                       ParagraphStyle("GT",parent=styles["Normal"],
+                                      fontName="Helvetica-Bold",fontSize=10,textColor=BB)),
              Paragraph(f"Rs. {money_inr(grand)}",
                        ParagraphStyle("GTR",parent=styles["Normal"],
                                       alignment=TA_RIGHT,fontName="Helvetica-Bold",
                                       fontSize=10,textColor=BB))],
     ]
-    t2 = Table(tot_data, colWidths=cw)
+    t2 = Table([["","",""]]+tot_rows, colWidths=cw)
     t2.setStyle(TableStyle([
         ("TOPPADDING",    (0,0),(-1,-1), 3),
         ("BOTTOMPADDING", (0,0),(-1,-1), 3),
@@ -672,123 +646,103 @@ def make_pdf(client_name, client_type, quote_no, df_quote, df_event,
         ("ALIGN",         (2,0),(2,-1), "RIGHT"),
         ("LINEABOVE",     (1,2),(2,2), 0.4, BORDER),
         ("LINEABOVE",     (1,4),(2,4), 0.4, BORDER),
-        # Grand total row background
         ("BACKGROUND",    (0,-1),(-1,-1), LIGHT),
         ("TOPPADDING",    (0,-1),(-1,-1), 6),
         ("BOTTOMPADDING", (0,-1),(-1,-1), 6),
-        ("BOX",           (0,-1),(-1,-1), 0.8, BB),
+        ("LEFTPADDING",   (0,-1),(-1,-1), 6),
+        ("BOX",           (0,-1),(-1,-1), 0.6, BB),
     ]))
     story.append(t2)
-    story.append(Spacer(1, 10))
+    story.append(Spacer(1, 8))
 
-    # ── Notes ──
-    notes_data = [
-        [Paragraph("<b>Notes</b>", bold9)],
-        [Paragraph(
-            "1. Our scope of engagement is strictly limited to the services enumerated above; "
-            "any additional services shall be subject to a separate arrangement.", normal8)],
-        [Paragraph(
-            f"2. This quotation is valid for a period of <b>15 days</b> from the date of "
-            f"generation, i.e., up to <b>{validity_date()}</b>.", normal8)],
-        [Paragraph(
-            "3. Kindly sign and return this proposal as confirmation of your acceptance of "
-            "the terms and fees set out herein.", normal8)],
-        [Paragraph(
-            "4. Please refer to the <b>'Event-Based Charges'</b> schedule appended hereto "
-            "for fees applicable to additional or incidental services.", normal8)],
-    ]
+    # ── Notes ──────────────────────────────────────────────────────────────────
+    notes_data = [[Paragraph(
+        "<b>Notes &amp; Terms:</b>  "
+        "1. Our scope of engagement is strictly limited to the services enumerated above; "
+        "any additional services shall be subject to a separate arrangement.  "
+        f"2. This quotation is valid for <b>15 days</b> from date of generation (i.e. up to <b>{validity_date()}</b>).  "
+        "3. Kindly sign and return this proposal as confirmation of your acceptance.  "
+        "4. Refer to the <b>Event-Based Charges</b> schedule overleaf for fees on additional services.",
+        ParagraphStyle("NP", parent=styles["Normal"], fontSize=8, textColor=DKGREY,
+                       leading=12))]]
     notes_tbl = Table(notes_data, colWidths=[doc.width])
     notes_tbl.setStyle(TableStyle([
-        ("BACKGROUND",    (0,0),(-1,-1), colors.HexColor("#FFFBF0")),
-        ("LEFTPADDING",   (0,0),(-1,-1), 8),
-        ("RIGHTPADDING",  (0,0),(-1,-1), 8),
-        ("TOPPADDING",    (0,0),(-1,-1), 3),
-        ("BOTTOMPADDING", (0,0),(-1,-1), 3),
+        ("BACKGROUND",    (0,0),(-1,-1), colors.HexColor("#FFFDF0")),
+        ("LEFTPADDING",   (0,0),(-1,-1), 10),
+        ("RIGHTPADDING",  (0,0),(-1,-1), 10),
+        ("TOPPADDING",    (0,0),(-1,-1), 6),
+        ("BOTTOMPADDING", (0,0),(-1,-1), 6),
         ("LINEBEFORE",    (0,0),(0,-1), 3, colors.HexColor("#FFC107")),
-        ("BOX",           (0,0),(-1,-1), 0.5, BORDER),
+        ("BOX",           (0,0),(-1,-1), 0.4, BORDER),
     ]))
     story.append(notes_tbl)
-    story.append(Spacer(1, 14))
+    story.append(Spacer(1, 10))
 
-    # ── Signature block ──
-    sig_l = Table([
+    # ── Signature block ────────────────────────────────────────────────────────
+    sl = [
         [Paragraph("For <b>V. Purohit &amp; Associates</b>", bold9)],
         [Paragraph("Chartered Accountants", normal8)],
-        [Spacer(1, 18)],
-        [Paragraph("_" * 36, normal9)],
+        [Spacer(1,16)],
+        [Paragraph("_"*34, normal9)],
         [Paragraph("<b>Authorised Signatory</b>", bold9)],
         [Paragraph(datetime.now().strftime("%d %B %Y"), normal8)],
-    ], colWidths=[85*mm])
-    sig_l.setStyle(TableStyle([
-        ("LEFTPADDING",   (0,0),(-1,-1), 0),
-        ("TOPPADDING",    (0,0),(-1,-1), 2),
-        ("BOTTOMPADDING", (0,0),(-1,-1), 2),
-    ]))
-
-    sig_r = Table([
-        [Paragraph(f"Accepted by:", normal8)],
-        [Paragraph(f"<b>{client_name}</b>", bold9)],
-        [Spacer(1, 18)],
-        [Paragraph("_" * 36, normal9)],
+    ]
+    sr = [
+        [Paragraph(f"Accepted by: <b>{client_name}</b>", bold9)],
+        [Spacer(1,4)],
+        [Spacer(1,16)],
+        [Paragraph("_"*34, normal9)],
         [Paragraph("<b>Signature &amp; Stamp</b>", bold9)],
-        [Paragraph("Date: _______________", normal8)],
-    ], colWidths=[85*mm])
-    sig_r.setStyle(TableStyle([
-        ("LEFTPADDING",   (0,0),(-1,-1), 0),
-        ("TOPPADDING",    (0,0),(-1,-1), 2),
-        ("BOTTOMPADDING", (0,0),(-1,-1), 2),
-    ]))
-
-    sig_outer = Table([[sig_l, sig_r]], colWidths=[doc.width/2, doc.width/2])
-    sig_outer.setStyle(TableStyle([
+        [Paragraph("Date: ___________________", normal8)],
+    ]
+    sig_tbl = Table([[
+        Table(sl, colWidths=[doc.width/2 - 4*mm]),
+        Table(sr, colWidths=[doc.width/2 - 4*mm]),
+    ]], colWidths=[doc.width/2, doc.width/2])
+    sig_tbl.setStyle(TableStyle([
         ("VALIGN",        (0,0),(-1,-1), "TOP"),
         ("LEFTPADDING",   (0,0),(-1,-1), 10),
-        ("TOPPADDING",    (0,0),(-1,-1), 10),
-        ("BOTTOMPADDING", (0,0),(-1,-1), 10),
+        ("RIGHTPADDING",  (0,0),(-1,-1), 10),
+        ("TOPPADDING",    (0,0),(-1,-1), 8),
+        ("BOTTOMPADDING", (0,0),(-1,-1), 8),
         ("BACKGROUND",    (0,0),(-1,-1), colors.HexColor("#F8FAFD")),
-        ("BOX",           (0,0),(-1,-1), 0.5, BORDER),
         ("LINEAFTER",     (0,0),(0,-1), 0.5, BORDER),
+        ("BOX",           (0,0),(-1,-1), 0.5, BORDER),
     ]))
-    story.append(sig_outer)
+    story.append(sig_tbl)
 
-    # ── Event-based page ──
+    # ── Event-based page ───────────────────────────────────────────────────────
     if not df_event.empty:
         story.append(PageBreak())
-        story.append(Spacer(1, 6))
+        story.append(Spacer(1, 4))
         story.append(Paragraph(
             "EVENT-BASED CHARGES",
-            ParagraphStyle("SH2", parent=styles["Normal"],
-                           fontName="Helvetica-Bold", fontSize=8,
-                           textColor=DKGREY, spaceAfter=4)))
+            ParagraphStyle("EH", parent=styles["Normal"],
+                           fontName="Helvetica-Bold", fontSize=10,
+                           textColor=BB, spaceAfter=2)))
         story.append(Paragraph(
             "The following charges are applicable as and when the respective events occur "
             "and are not included in the annual fees quoted above.",
-            normal8))
-        story.append(Spacer(1, 6))
-
+            ParagraphStyle("ES", parent=styles["Normal"], fontSize=8,
+                           textColor=DKGREY, spaceAfter=6)))
         erows = _event_rows(df_event)
-        erows[0] = [
-            Paragraph("<b>Service / Description</b>", hc),
-            Paragraph("<b>Applicable Fees (Rs.)</b>", hc),
-        ]
+        erows[0] = [Paragraph(h, hc) for h in
+                    ["Service / Description", "Applicable Fees (Rs.)"]]
         ev = Table(erows, colWidths=[140*mm, 33*mm], repeatRows=1)
         ev.setStyle(TableStyle([
             ("BACKGROUND",    (0,0),(-1,0), BB),
-            ("TEXTCOLOR",     (0,0),(-1,0), colors.white),
-            ("FONTNAME",      (0,0),(-1,0), "Helvetica-Bold"),
             ("FONTSIZE",      (0,0),(-1,0), 9),
-            ("TOPPADDING",    (0,0),(-1,0), 7),
-            ("BOTTOMPADDING", (0,0),(-1,0), 7),
-            ("ALIGN",         (0,0),(-1,0), "CENTER"),
+            ("TOPPADDING",    (0,0),(-1,0), 6),
+            ("BOTTOMPADDING", (0,0),(-1,0), 6),
             ("FONTSIZE",      (0,1),(-1,-1), 9),
             ("TOPPADDING",    (0,1),(-1,-1), 5),
             ("BOTTOMPADDING", (0,1),(-1,-1), 5),
-            ("LEFTPADDING",   (0,1),(-1,-1), 6),
+            ("LEFTPADDING",   (0,0),(-1,-1), 6),
             ("ALIGN",         (1,1),(1,-1), "RIGHT"),
             ("VALIGN",        (0,0),(-1,-1), "MIDDLE"),
-            ("ROWBACKGROUNDS",(0,1),(-1,-1), [colors.white, colors.HexColor("#F4F7FB")]),
+            ("ROWBACKGROUNDS",(0,1),(-1,-1),[colors.white, colors.HexColor("#F4F7FB")]),
             ("INNERGRID",     (0,1),(-1,-1), 0.3, BORDER),
-            ("BOX",           (0,0),(-1,-1), 0.8, BORDER),
+            ("BOX",           (0,0),(-1,-1), 0.6, BORDER),
         ]))
         story.append(ev)
 
@@ -908,6 +862,25 @@ h1>a,h2>a,h3>a,h4>a{{display:none !important;}}
 .totals-card .grand{{font-size:1.2rem;font-weight:800;color:{BRAND_BLUE_HEX};}}
 .brand-header{{background:{BRAND_BLUE_HEX};padding:16px 22px;
   border-radius:8px;margin-bottom:16px;}}
+/* Narrow checkbox columns in data_editor */
+[data-testid="stDataEditor"] th:nth-child(1),
+[data-testid="stDataEditor"] td:nth-child(1),
+[data-testid="stDataEditor"] th:nth-child(2),
+[data-testid="stDataEditor"] td:nth-child(2) {{
+  max-width:52px !important; min-width:52px !important; width:52px !important;
+}}
+/* Center all column headers in data_editor */
+[data-testid="stDataEditor"] th {{
+  text-align:center !important;
+  justify-content:center !important;
+}}
+/* Reorder up/down buttons — small and compact */
+[data-testid="stColumns"] .stButton>button {{
+  padding:2px 6px !important;
+  font-size:0.75rem !important;
+  min-height:28px !important;
+  line-height:1 !important;
+}}
 </style>""", unsafe_allow_html=True)
 
 
@@ -1119,57 +1092,98 @@ with t1:
             st.rerun()
 
         st.markdown('<div class="info-box">'
-                    '✅ <b>Check</b> the services you want to include. '
-                    'Edit the <b>Order</b> number to rearrange rows in the PDF. '
-                    'Use <b>→ Event</b> to move a service to the event-based section.</div>',
+                    '✅ <b>Check</b> services to include. '
+                    'Use <b>↑ ↓</b> buttons to reorder — top rows appear first in the PDF. '
+                    'Use <b>→ Event</b> to move a line to the event-based section.</div>',
                     unsafe_allow_html=True)
 
-        # Main editor
         if not st.session_state["quote_df"].empty:
-            with st.form("edit_main"):
-                edited = st.data_editor(
-                    st.session_state["quote_df"],
-                    use_container_width=True,
-                    disabled=["Service","Details"],
-                    column_order=["Order","Include","MoveToEvent","Service","Details","Annual Fees (Rs.)"],
-                    column_config={
-                        "Order": st.column_config.NumberColumn(
-                            "Order", help="Edit number to rearrange rows in PDF output.",
-                            min_value=1, step=1, width="small"),
-                        "Include":     st.column_config.CheckboxColumn(
-                            "Include", help="Check to include in proposal.", width="small"),
-                        "MoveToEvent": st.column_config.CheckboxColumn(
-                            "→ Event", help="Move to event-based section.", width="small"),
-                        "Service": st.column_config.TextColumn("Service", width="medium"),
-                        "Details": st.column_config.TextColumn("Details", width="medium"),
-                        "Annual Fees (Rs.)": st.column_config.TextColumn(
-                            "Annual Fees (Rs.)", validate=r"^\s*[\d,]*\s*$", width="small"),
-                    },
-                    num_rows="fixed", key="qeditor", hide_index=True, height=420)
-                b1, b2 = st.columns(2)
-                do_apply = b1.form_submit_button("✅ Apply Edits", use_container_width=True)
-                do_move  = b2.form_submit_button("✅ Apply & Move to Event", use_container_width=True)
-                if do_apply or do_move:
-                    edited["Annual Fees (Rs.)"] = edited["Annual Fees (Rs.)"].apply(
-                        lambda x: money_inr(parse_inr(x)))
-                    # Sort by Order column before saving
-                    edited = edited.sort_values("Order").reset_index(drop=True)
-                    st.session_state["quote_df"] = edited.copy()
-                    if do_move:
-                        mv = edited[edited["MoveToEvent"]].copy()
-                        if not mv.empty:
-                            mv = mv[["Service","Details","Annual Fees (Rs.)"]].copy()
-                            mv["MoveToMain"] = False
-                            st.session_state["event_df"] = pd.concat(
-                                [st.session_state["event_df"], mv], ignore_index=True)
-                            kept = edited[~edited["MoveToEvent"]].copy()
-                            kept["MoveToEvent"] = False
-                            st.session_state["quote_df"] = kept
-                            st.success(f"Moved {len(mv)} row(s) to Event-based.")
+
+            reorder_col, editor_col = st.columns([1, 2])
+
+            # ── LEFT: Reorder panel ───────────────────────────────────────────
+            with reorder_col:
+                st.markdown("**↕ Reorder Services**")
+                st.caption("Use ↑ ↓ to set PDF order")
+                qdf_ro = st.session_state["quote_df"].reset_index(drop=True)
+                for i, row in qdf_ro.iterrows():
+                    svc_label = str(row.get("Details","") or row.get("Service",""))
+                    if len(svc_label) > 28:
+                        svc_label = svc_label[:26] + "…"
+                    rc1, rc2, rc3 = st.columns([3, 1, 1])
+                    rc1.markdown(
+                        f'<div style="font-size:0.78rem;padding:4px 0;'
+                        f'color:{"#111" if row.get("Include") else "#aaa"};">'
+                        f'{svc_label}</div>',
+                        unsafe_allow_html=True)
+                    # Up button — disabled for first row
+                    if i > 0:
+                        if rc2.button("↑", key=f"up_{i}", help="Move up",
+                                      use_container_width=True):
+                            df_tmp = st.session_state["quote_df"].copy().reset_index(drop=True)
+                            df_tmp.iloc[[i-1, i]] = df_tmp.iloc[[i, i-1]].values
+                            st.session_state["quote_df"] = df_tmp.reset_index(drop=True)
+                            st.rerun()
+                    else:
+                        rc2.markdown("")
+                    # Down button — disabled for last row
+                    if i < len(qdf_ro) - 1:
+                        if rc3.button("↓", key=f"dn_{i}", help="Move down",
+                                      use_container_width=True):
+                            df_tmp = st.session_state["quote_df"].copy().reset_index(drop=True)
+                            df_tmp.iloc[[i, i+1]] = df_tmp.iloc[[i+1, i]].values
+                            st.session_state["quote_df"] = df_tmp.reset_index(drop=True)
+                            st.rerun()
+                    else:
+                        rc3.markdown("")
+
+            # ── RIGHT: Fee editor ─────────────────────────────────────────────
+            with editor_col:
+                st.markdown("**✏️ Edit Fees & Selection**")
+                st.caption("Check to include · Edit fee · → Event to move")
+                with st.form("edit_main"):
+                    edited = st.data_editor(
+                        st.session_state["quote_df"],
+                        use_container_width=True,
+                        disabled=["Service","Details"],
+                        column_order=["Include","MoveToEvent","Service","Details","Annual Fees (Rs.)"],
+                        column_config={
+                            "Include": st.column_config.CheckboxColumn(
+                                "✓", help="Include in proposal.", width="small"),
+                            "MoveToEvent": st.column_config.CheckboxColumn(
+                                "Event", help="Move to event-based.", width="small"),
+                            "Service": st.column_config.TextColumn("Service", width="medium"),
+                            "Details": st.column_config.TextColumn("Details", width="medium"),
+                            "Annual Fees (Rs.)": st.column_config.TextColumn(
+                                "Annual Fees (Rs.)",
+                                validate=r"^\s*[\d,]*\s*$", width="small"),
+                        },
+                        num_rows="fixed", key="qeditor", hide_index=True,
+                        height=min(80 + len(st.session_state["quote_df"]) * 35, 500))
+                    b1, b2 = st.columns(2)
+                    do_apply = b1.form_submit_button("✅ Apply Edits",
+                                                      use_container_width=True)
+                    do_move  = b2.form_submit_button("✅ Apply & Move to Event",
+                                                      use_container_width=True)
+                    if do_apply or do_move:
+                        edited["Annual Fees (Rs.)"] = edited["Annual Fees (Rs.)"].apply(
+                            lambda x: money_inr(parse_inr(x)))
+                        st.session_state["quote_df"] = edited.copy()
+                        if do_move:
+                            mv = edited[edited["MoveToEvent"]].copy()
+                            if not mv.empty:
+                                mv = mv[["Service","Details","Annual Fees (Rs.)"]].copy()
+                                mv["MoveToMain"] = False
+                                st.session_state["event_df"] = pd.concat(
+                                    [st.session_state["event_df"], mv], ignore_index=True)
+                                kept = edited[~edited["MoveToEvent"]].copy()
+                                kept["MoveToEvent"] = False
+                                st.session_state["quote_df"] = kept
+                                st.success(f"Moved {len(mv)} row(s) to Event-based.")
 
         qdf      = st.session_state["quote_df"]
-        filtered = qdf[qdf["Include"]==True].sort_values("Order").drop(
-            columns=["Include","MoveToEvent","Order"], errors="ignore").copy()
+        filtered = qdf[qdf["Include"]==True].drop(
+            columns=["Include","MoveToEvent"], errors="ignore").copy()
 
         # Event editor
         ev_df = st.session_state["event_df"].copy()
@@ -1452,7 +1466,7 @@ with t3:
                     rebuild["Annual Fees (Rs.)"] = rebuild["Annual Fees (Rs.)"].apply(money_inr)
                     rebuild["Include"]     = False
                     rebuild["MoveToEvent"] = False
-                    rebuild["Order"]       = range(1, len(rebuild) + 1)
+
 
                     cl_df2 = load_clients()
                     cl_match = (cl_df2[cl_df2["ClientName"].str.strip().str.upper()
