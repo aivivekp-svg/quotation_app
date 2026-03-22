@@ -386,13 +386,16 @@ def prep_editor_df(df: pd.DataFrame) -> pd.DataFrame:
 # ── PDF ───────────────────────────────────────────────────────────────────────
 
 def _grouped_rows(df):
+    """Preserve row order exactly as passed in — no re-sorting."""
     rows = [["Service","Details","Annual Fees<br/>(Rs.)"]]
-    for svc, grp in df.groupby("Service", sort=True):
-        g = grp.sort_values("Details"); first = True
-        for _, r in g.iterrows():
-            rows.append([svc if first else "", r["Details"],
-                         money_inr(parse_inr(r["Annual Fees (Rs.)"]))])
-            first = False
+    seen = {}   # service -> first row index where we already printed the label
+    for _, r in df.iterrows():
+        svc    = str(r.get("Service","")).strip()
+        detail = str(r.get("Details","")).strip()
+        amt    = money_inr(parse_inr(r.get("Annual Fees (Rs.)","0")))
+        label  = "" if svc in seen else svc
+        seen[svc] = True
+        rows.append([label, detail, amt])
     return rows
 
 
@@ -1160,8 +1163,13 @@ with t1:
                             st.session_state["quote_df"] = kept
                             st.success(f"Moved {len(mv)} row(s) to Event-based.")
 
-        qdf      = st.session_state["quote_df"]
-        filtered = qdf[qdf["Include"]==True].drop(
+        qdf = st.session_state["quote_df"]
+        _inc = qdf[qdf["Include"]==True].copy()
+        # Sort by Order (numbered rows first), then preserve original position for blanks
+        _has = _inc["Order"].notna() if "Order" in _inc.columns else pd.Series(False, index=_inc.index)
+        _ordered   = _inc[_has].sort_values("Order")
+        _unordered = _inc[~_has]
+        filtered = pd.concat([_ordered, _unordered]).drop(
             columns=["Include","MoveToEvent","Order"], errors="ignore").copy()
 
         # Event editor
