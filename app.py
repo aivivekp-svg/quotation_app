@@ -1152,6 +1152,7 @@ with t1:
                         [ordered, unordered], ignore_index=True)
                     if do_move:
                         cur = st.session_state["quote_df"]
+                        cur["MoveToEvent"] = cur["MoveToEvent"].fillna(False).astype(bool)
                         mv  = cur[cur["MoveToEvent"]].copy()
                         if not mv.empty:
                             mv = mv[["Service","Details","Annual Fees (Rs.)"]].copy()
@@ -1164,6 +1165,8 @@ with t1:
                             st.success(f"Moved {len(mv)} row(s) to Event-based.")
 
         qdf = st.session_state["quote_df"]
+        qdf["Include"]     = qdf["Include"].fillna(False).astype(bool)
+        qdf["MoveToEvent"] = qdf["MoveToEvent"].fillna(False).astype(bool)
         _inc = qdf[qdf["Include"]==True].copy()
         # Sort by Order (numbered rows first), then preserve original position for blanks
         _has = _inc["Order"].notna() if "Order" in _inc.columns else pd.Series(False, index=_inc.index)
@@ -1197,6 +1200,7 @@ with t1:
                         s = str(v).strip()
                         return "" if s in ("","nan") else money_inr(parse_inr(s.replace(",","")))
                     ev_ed["Annual Fees (Rs.)"] = ev_ed["Annual Fees (Rs.)"].apply(_ef)
+                    ev_ed["MoveToMain"] = ev_ed["MoveToMain"].fillna(False).astype(bool)
                     to_main = ev_ed[ev_ed["MoveToMain"]].copy()
                     keep_ev = ev_ed[~ev_ed["MoveToMain"]].copy()
                     if not to_main.empty:
