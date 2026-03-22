@@ -377,8 +377,9 @@ def prep_editor_df(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy().reset_index(drop=True)
     out["Annual Fees (Rs.)"] = out["Annual Fees (Rs.)"].apply(
         lambda x: money_inr(float(x)) if str(x).strip() not in ("","nan") else "")
-    out["Include"]     = False   # all deselected by default
+    out["Include"]     = False
     out["MoveToEvent"] = False
+    out["Order"]       = None   # blank — user types preferred order
     return out
 
 
@@ -1093,97 +1094,75 @@ with t1:
 
         st.markdown('<div class="info-box">'
                     '✅ <b>Check</b> services to include. '
-                    'Use <b>↑ ↓</b> buttons to reorder — top rows appear first in the PDF. '
+                    'Type a number in <b>Order</b> to set PDF sequence (blank = end). '
                     'Use <b>→ Event</b> to move a line to the event-based section.</div>',
                     unsafe_allow_html=True)
 
         if not st.session_state["quote_df"].empty:
 
-            reorder_col, editor_col = st.columns([1, 2])
+            # Select All / Deselect All buttons
+            sa1, sa2, _ = st.columns([1, 1, 4])
+            if sa1.button("☑ Select All", use_container_width=True):
+                df_sa = st.session_state["quote_df"].copy()
+                df_sa["Include"] = True
+                st.session_state["quote_df"] = df_sa
+                st.rerun()
+            if sa2.button("☐ Deselect All", use_container_width=True):
+                df_sa = st.session_state["quote_df"].copy()
+                df_sa["Include"] = False
+                st.session_state["quote_df"] = df_sa
+                st.rerun()
 
-            # ── LEFT: Reorder panel ───────────────────────────────────────────
-            with reorder_col:
-                st.markdown("**↕ Reorder Services**")
-                st.caption("Use ↑ ↓ to set PDF order")
-                qdf_ro = st.session_state["quote_df"].reset_index(drop=True)
-                for i, row in qdf_ro.iterrows():
-                    svc_label = str(row.get("Details","") or row.get("Service",""))
-                    if len(svc_label) > 28:
-                        svc_label = svc_label[:26] + "…"
-                    rc1, rc2, rc3 = st.columns([3, 1, 1])
-                    rc1.markdown(
-                        f'<div style="font-size:0.78rem;padding:4px 0;'
-                        f'color:{"#111" if row.get("Include") else "#aaa"};">'
-                        f'{svc_label}</div>',
-                        unsafe_allow_html=True)
-                    # Up button — disabled for first row
-                    if i > 0:
-                        if rc2.button("↑", key=f"up_{i}", help="Move up",
-                                      use_container_width=True):
-                            df_tmp = st.session_state["quote_df"].copy().reset_index(drop=True)
-                            df_tmp.iloc[[i-1, i]] = df_tmp.iloc[[i, i-1]].values
-                            st.session_state["quote_df"] = df_tmp.reset_index(drop=True)
-                            st.rerun()
-                    else:
-                        rc2.markdown("")
-                    # Down button — disabled for last row
-                    if i < len(qdf_ro) - 1:
-                        if rc3.button("↓", key=f"dn_{i}", help="Move down",
-                                      use_container_width=True):
-                            df_tmp = st.session_state["quote_df"].copy().reset_index(drop=True)
-                            df_tmp.iloc[[i, i+1]] = df_tmp.iloc[[i+1, i]].values
-                            st.session_state["quote_df"] = df_tmp.reset_index(drop=True)
-                            st.rerun()
-                    else:
-                        rc3.markdown("")
-
-            # ── RIGHT: Fee editor ─────────────────────────────────────────────
-            with editor_col:
-                st.markdown("**✏️ Edit Fees & Selection**")
-                st.caption("Check to include · Edit fee · → Event to move")
-                with st.form("edit_main"):
-                    edited = st.data_editor(
-                        st.session_state["quote_df"],
-                        use_container_width=True,
-                        disabled=["Service","Details"],
-                        column_order=["Include","MoveToEvent","Service","Details","Annual Fees (Rs.)"],
-                        column_config={
-                            "Include": st.column_config.CheckboxColumn(
-                                "✓", help="Include in proposal.", width="small"),
-                            "MoveToEvent": st.column_config.CheckboxColumn(
-                                "Event", help="Move to event-based.", width="small"),
-                            "Service": st.column_config.TextColumn("Service", width="medium"),
-                            "Details": st.column_config.TextColumn("Details", width="medium"),
-                            "Annual Fees (Rs.)": st.column_config.TextColumn(
-                                "Annual Fees (Rs.)",
-                                validate=r"^\s*[\d,]*\s*$", width="small"),
-                        },
-                        num_rows="fixed", key="qeditor", hide_index=True,
-                        height=min(80 + len(st.session_state["quote_df"]) * 35, 500))
-                    b1, b2 = st.columns(2)
-                    do_apply = b1.form_submit_button("✅ Apply Edits",
-                                                      use_container_width=True)
-                    do_move  = b2.form_submit_button("✅ Apply & Move to Event",
-                                                      use_container_width=True)
-                    if do_apply or do_move:
-                        edited["Annual Fees (Rs.)"] = edited["Annual Fees (Rs.)"].apply(
-                            lambda x: money_inr(parse_inr(x)))
-                        st.session_state["quote_df"] = edited.copy()
-                        if do_move:
-                            mv = edited[edited["MoveToEvent"]].copy()
-                            if not mv.empty:
-                                mv = mv[["Service","Details","Annual Fees (Rs.)"]].copy()
-                                mv["MoveToMain"] = False
-                                st.session_state["event_df"] = pd.concat(
-                                    [st.session_state["event_df"], mv], ignore_index=True)
-                                kept = edited[~edited["MoveToEvent"]].copy()
-                                kept["MoveToEvent"] = False
-                                st.session_state["quote_df"] = kept
-                                st.success(f"Moved {len(mv)} row(s) to Event-based.")
+            with st.form("edit_main"):
+                edited = st.data_editor(
+                    st.session_state["quote_df"],
+                    use_container_width=True,
+                    disabled=["Service","Details"],
+                    column_order=["Order","Include","MoveToEvent","Service","Details","Annual Fees (Rs.)"],
+                    column_config={
+                        "Order": st.column_config.NumberColumn(
+                            "Order", help="Type 1, 2, 3… to set PDF row order. Leave blank to append at end.",
+                            min_value=1, step=1, width="small"),
+                        "Include": st.column_config.CheckboxColumn(
+                            "✓", help="Include in proposal.", width="small"),
+                        "MoveToEvent": st.column_config.CheckboxColumn(
+                            "→ Evt", help="Move to event-based section.", width="small"),
+                        "Service": st.column_config.TextColumn("Service", width="medium"),
+                        "Details": st.column_config.TextColumn("Details", width="medium"),
+                        "Annual Fees (Rs.)": st.column_config.TextColumn(
+                            "Annual Fees (Rs.)",
+                            validate=r"^\s*[\d,]*\s*$", width="small"),
+                    },
+                    num_rows="fixed", key="qeditor", hide_index=True,
+                    height=min(80 + len(st.session_state["quote_df"]) * 35, 520))
+                b1, b2 = st.columns(2)
+                do_apply = b1.form_submit_button("✅ Apply Edits", use_container_width=True)
+                do_move  = b2.form_submit_button("✅ Apply & Move to Event", use_container_width=True)
+                if do_apply or do_move:
+                    edited["Annual Fees (Rs.)"] = edited["Annual Fees (Rs.)"].apply(
+                        lambda x: money_inr(parse_inr(x)))
+                    # Sort: rows with Order filled first (ascending), blanks at end
+                    has_order  = edited["Order"].notna()
+                    ordered    = edited[has_order].sort_values("Order").reset_index(drop=True)
+                    unordered  = edited[~has_order].reset_index(drop=True)
+                    st.session_state["quote_df"] = pd.concat(
+                        [ordered, unordered], ignore_index=True)
+                    if do_move:
+                        cur = st.session_state["quote_df"]
+                        mv  = cur[cur["MoveToEvent"]].copy()
+                        if not mv.empty:
+                            mv = mv[["Service","Details","Annual Fees (Rs.)"]].copy()
+                            mv["MoveToMain"] = False
+                            st.session_state["event_df"] = pd.concat(
+                                [st.session_state["event_df"], mv], ignore_index=True)
+                            kept = cur[~cur["MoveToEvent"]].copy()
+                            kept["MoveToEvent"] = False
+                            st.session_state["quote_df"] = kept
+                            st.success(f"Moved {len(mv)} row(s) to Event-based.")
 
         qdf      = st.session_state["quote_df"]
         filtered = qdf[qdf["Include"]==True].drop(
-            columns=["Include","MoveToEvent"], errors="ignore").copy()
+            columns=["Include","MoveToEvent","Order"], errors="ignore").copy()
 
         # Event editor
         ev_df = st.session_state["event_df"].copy()
@@ -1466,6 +1445,7 @@ with t3:
                     rebuild["Annual Fees (Rs.)"] = rebuild["Annual Fees (Rs.)"].apply(money_inr)
                     rebuild["Include"]     = False
                     rebuild["MoveToEvent"] = False
+                    rebuild["Order"]       = None
 
 
                     cl_df2 = load_clients()
