@@ -274,13 +274,29 @@ def parse_inr(s) -> float:
         return 0.0
 
 
-def validity_date(days=30) -> str:
+def validity_date(days=15) -> str:
     return (datetime.now() + timedelta(days=days)).strftime("%d-%b-%Y")
 
 
 def get_fy(dt: datetime) -> str:
     y = dt.year
     return f"FY {y-1}-{str(y)[2:]}" if dt.month < 4 else f"FY {y}-{str(y+1)[2:]}"
+
+
+def generate_quote_no() -> str:
+    """Generate sequential quote number: VPA/25-26/001"""
+    fy     = get_fy(datetime.now())            # e.g. "FY 2025-26"
+    fy_short = fy.replace("FY ","").replace("20","")  # e.g. "25-26"
+    try:
+        rpt = sheet_to_df(SH_REPORTS)
+        if rpt.empty:
+            count = 1
+        else:
+            fy_rows = rpt[rpt["FY"] == fy] if "FY" in rpt.columns else rpt
+            count   = len(fy_rows) + 1
+    except Exception:
+        count = 1
+    return f"VPA/{fy_short}/{count:03d}"
 
 
 def validate_email(e: str) -> bool:
@@ -475,7 +491,6 @@ def make_pdf(client_name, client_type, quote_no, df_quote, df_event,
         lc.append(Paragraph(f"<b>Phone:</b> {phone.strip()}", styles["Normal"]))
     rc.append(Paragraph(f"<b>Quotation No.:</b> {quote_no}", styles["Normal"]))
     rc.append(Paragraph(f"<b>Date:</b> {datetime.now().strftime('%d-%b-%Y')}", styles["Normal"]))
-    rc.append(Paragraph(f"<b>Valid Until:</b> {validity_date()}", styles["Normal"]))
     if proposal_start.strip():
         rc.append(Paragraph(f"<b>Proposed Start:</b> {proposal_start.strip()}", styles["Normal"]))
 
@@ -536,10 +551,14 @@ def make_pdf(client_name, client_type, quote_no, df_quote, df_event,
     # Notes
     story.append(Paragraph(
         f"<b>Notes:</b><br/>"
-        f"1. All fees are exclusive of applicable taxes and out-of-pocket expenses.<br/>"
-        f"2. Scope is limited to services listed above.<br/>"
-        f"3. This quotation is valid until <b>{validity_date()}</b>.<br/>"
-        f"4. Services commence upon execution of a formal engagement letter.",
+        f"1. Our scope of engagement is strictly limited to the services enumerated above; "
+        f"any additional services shall be subject to a separate arrangement.<br/>"
+        f"2. This quotation is valid for a period of <b>15 days</b> from the date of generation, "
+        f"i.e., up to <b>{validity_date()}</b>.<br/>"
+        f"3. Kindly sign and return this proposal as confirmation of your acceptance of the "
+        f"terms and fees set out herein.<br/>"
+        f"4. Please refer to the <b>'Event-Based Charges'</b> schedule appended hereto for "
+        f"fees applicable to additional or incidental services.",
         styles["Normal"]))
     story.append(Spacer(1,16))
 
@@ -873,7 +892,7 @@ with t1:
         if errs:
             for e in errs: st.error(f"⚠️ {e}")
         else:
-            qno = datetime.now().strftime("QTN-%Y%m%d-%H%M%S")
+            qno = generate_quote_no()
             st.session_state.update({
                 "quote_no":qno,"proposal_start":proposal_start,
                 "client_name":client_name,"client_type":client_type,
@@ -1262,7 +1281,7 @@ with t3:
                         "event_df":      pd.DataFrame(columns=["Service","Details",
                                                                 "Annual Fees (Rs.)","MoveToMain"]),
                         "editor_active": True,
-                        "quote_no":      datetime.now().strftime("QTN-%Y%m%d-%H%M%S"),
+                        "quote_no":      generate_quote_no(),
                         "quote_saved":   False,
                         "proposal_start":get_fy(datetime.now()),
                     })
