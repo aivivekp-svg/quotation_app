@@ -749,77 +749,422 @@ def make_pdf(client_name, client_type, quote_no, df_quote, df_event,
 
 def export_excel(df_main, df_event, client_name, client_type, quote_no,
                  subtotal, discount_pct, discount_amt, gst_amt, grand,
-                 discount_reason=""):
+                 discount_reason="", addr="", email="", phone="",
+                 proposal_start=""):
+    import os
     from openpyxl import Workbook
-    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.styles import (Font, PatternFill, Alignment, Border,
+                                  Side, GradientFill)
+    from openpyxl.utils import get_column_letter
+    from openpyxl.drawing.image import Image as XLImage
 
-    wb    = Workbook()
-    thin  = Side(style="thin", color="000000")
-    ba    = Border(left=thin, right=thin, top=thin, bottom=thin)
-    hfill = PatternFill("solid", fgColor=BRAND_BLUE_HEX.replace("#",""))
-    hfont = Font(color="FFFFFF", bold=True)
-    right = Alignment(horizontal="right")
-    ctr   = Alignment(horizontal="center")
+    wb  = Workbook()
+    ws  = wb.active
+    ws.title = "Quotation"
 
-    ws = wb.active; ws.title = "Annual Fees"
-    ws.append(["Service","Details","Annual Fees (Rs.)"])
-    for c in range(1,4):
-        cell = ws.cell(1,c)
-        cell.fill,cell.font,cell.alignment,cell.border = hfill,hfont,ctr,ba
+    # ── Palette ───────────────────────────────────────────────────────────────
+    BLUE     = BRAND_BLUE_HEX.replace("#","")
+    LT_BLUE  = "E8F0FB"
+    LT_GREY  = "F8FAFD"
+    AMBER    = "FFF9E6"
+    AMB_BDR  = "FFC107"
+    WHITE    = "FFFFFF"
+    DK_GREY  = "4A4A4A"
+    BORDER_C = "DEE2E6"
 
-    for svc, grp in df_main.groupby("Service", sort=True):
-        g = grp.sort_values("Details"); first = True
-        for _, r in g.iterrows():
-            ws.append([svc if first else "",
-                        r.get("Details",""),
-                        int(round(parse_inr(r.get("Annual Fees (Rs.)","0"))))])
-            first = False
+    thin   = Side(style="thin",   color=BORDER_C)
+    med    = Side(style="medium", color=BLUE)
+    no_s   = Side(style=None)
+    ba     = Border(left=thin, right=thin, top=thin, bottom=thin)
+    b_med  = Border(left=med,  right=med,  top=med,  bottom=med)
+    b_bot  = Border(bottom=Side(style="thin", color=BORDER_C))
+    b_top  = Border(top=Side(style="thin", color=BORDER_C))
 
-    for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
-        row[2].number_format = '#,##,##0'
-        for cell in row: cell.border = ba
+    hfill  = PatternFill("solid", fgColor=BLUE)
+    lbfill = PatternFill("solid", fgColor=LT_BLUE)
+    lgfill = PatternFill("solid", fgColor=LT_GREY)
+    wfill  = PatternFill("solid", fgColor=WHITE)
+    afill  = PatternFill("solid", fgColor=AMBER)
+    altfill= PatternFill("solid", fgColor="F4F7FB")
 
-    ws.column_dimensions["A"].width = 28
-    ws.column_dimensions["B"].width = 52
-    ws.column_dimensions["C"].width = 18
+    hfont  = Font(name="Calibri", color=WHITE,   bold=True,  size=10)
+    bfont  = Font(name="Calibri", bold=True,      size=10)
+    bfont9 = Font(name="Calibri", bold=True,      size=9)
+    nfont  = Font(name="Calibri", size=9)
+    sfont  = Font(name="Calibri", size=8,  color=DK_GREY)
+    tfont  = Font(name="Calibri", size=16, bold=True, color=BLUE)
+    ffont  = Font(name="Calibri", size=7,  color=DK_GREY, italic=True)
+    wfont  = Font(name="Calibri", size=8,  color=DK_GREY)
 
-    sr = ws.max_row + 2
-    ws.cell(sr,2,"Totals").font = Font(bold=True)
-    disc_lbl = f"Discount ({int(discount_pct)}%)" + (f" — {discount_reason}" if discount_reason else "")
-    for i,(lbl,amt) in enumerate([
-        ("Subtotal",subtotal),(disc_lbl,-discount_amt),
-        ("Taxable Amount",subtotal-discount_amt),
-        ("GST (18%)",gst_amt),("Grand Total",grand),
-    ], start=sr+1):
-        ws.cell(i,2,lbl)
-        c = ws.cell(i,3,int(round(amt)))
-        c.number_format = '#,##,##0'; c.alignment = right
+    ctr    = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    left   = Alignment(horizontal="left",   vertical="center", wrap_text=True)
+    right  = Alignment(horizontal="right",  vertical="center")
+    vctr   = Alignment(vertical="center",   wrap_text=True)
 
+    # ── Column widths: A=logo/label, B=content, C=service, D=details, E=fee ──
+    ws.column_dimensions["A"].width = 3    # left margin
+    ws.column_dimensions["B"].width = 32
+    ws.column_dimensions["C"].width = 32
+    ws.column_dimensions["D"].width = 18
+    ws.column_dimensions["E"].width = 3    # right margin
+
+    def mcell(row, col, value="", font=None, fill=None,
+              alignment=None, border=None, number_format=None):
+        c = ws.cell(row=row, column=col, value=value)
+        if font:         c.font        = font
+        if fill:         c.fill        = fill
+        if alignment:    c.alignment   = alignment
+        if border:       c.border      = border
+        if number_format:c.number_format = number_format
+        return c
+
+    def merge(r1, c1, r2, c2):
+        ws.merge_cells(start_row=r1, start_column=c1,
+                       end_row=r2,   end_column=c2)
+
+    def set_row_height(r, h):
+        ws.row_dimensions[r].height = h
+
+    # ── ROW 1-5: Blue header band ─────────────────────────────────────────────
+    for r in range(1, 6):
+        set_row_height(r, 10)
+        for c in range(1, 6):
+            ws.cell(r, c).fill = hfill
+
+    # Try to embed logo
+    logo_row = 1
+    logo_inserted = False
+    for nm in ("logo.png","logo.jpg","logo.jpeg"):
+        if os.path.exists(nm):
+            try:
+                img      = XLImage(nm)
+                img.width  = 90
+                img.height = 45
+                img.anchor = "B1"
+                ws.add_image(img)
+                logo_inserted = True
+            except Exception:
+                pass
+            break
+
+    # Firm name centred in header (rows 1-5, cols B-D)
+    merge(1, 2, 5, 4)
+    c = ws.cell(1, 2)
+    c.value     = "V. Purohit & Associates\nChartered Accountants"
+    c.font      = Font(name="Calibri", bold=True, size=14, color=WHITE)
+    c.alignment = Alignment(horizontal="center", vertical="center",
+                             wrap_text=True)
+    c.fill      = hfill
+
+    # ── ROW 6: spacer ─────────────────────────────────────────────────────────
+    set_row_height(6, 4)
+
+    # ── ROW 7: "Quotation for Professional Fees" title ────────────────────────
+    set_row_height(7, 22)
+    merge(7, 2, 7, 4)
+    c = ws.cell(7, 2)
+    c.value     = "Quotation for Professional Fees"
+    c.font      = tfont
+    c.alignment = ctr
+    c.fill      = lbfill
+    c.border    = Border(top=Side(style="thin",color=BLUE),
+                          bottom=Side(style="thin",color=BLUE))
+
+    # ── ROW 8: spacer ─────────────────────────────────────────────────────────
+    set_row_height(8, 5)
+
+    # ── ROW 9-10: Ref bar (Ref No | Date) ────────────────────────────────────
+    set_row_height(9, 5)
+    set_row_height(10, 16)
+    merge(10, 2, 10, 3)
+    ws.cell(10, 2).value     = f"Ref. No.: {quote_no}"
+    ws.cell(10, 2).font      = bfont9
+    ws.cell(10, 2).fill      = lbfill
+    ws.cell(10, 2).alignment = left
+    ws.cell(10, 2).border    = Border(top=thin,bottom=thin,left=thin)
+    ws.cell(10, 4).value     = f"Date: {datetime.now().strftime('%d %B %Y')}"
+    ws.cell(10, 4).font      = bfont9
+    ws.cell(10, 4).fill      = lbfill
+    ws.cell(10, 4).alignment = right
+    ws.cell(10, 4).border    = Border(top=thin,bottom=thin,right=thin)
+
+    # ── ROW 11: spacer ────────────────────────────────────────────────────────
+    set_row_height(11, 5)
+
+    # ── ROW 12 onwards: Client details ───────────────────────────────────────
+    cur = 12
+    def client_row(label_val, is_name=False):
+        nonlocal cur
+        set_row_height(cur, 14 if not is_name else 18)
+        merge(cur, 2, cur, 4)
+        c = ws.cell(cur, 2)
+        c.value     = label_val
+        c.font      = Font(name="Calibri", bold=is_name,
+                           size=11 if is_name else 9,
+                           color="000000" if is_name else DK_GREY)
+        c.fill      = lgfill
+        c.alignment = left
+        c.border    = Border(left=thin, right=thin,
+                             top=(thin if cur==12 else no_s),
+                             bottom=no_s)
+        cur += 1
+
+    # TO label
+    set_row_height(cur, 10)
+    merge(cur, 2, cur, 4)
+    c = ws.cell(cur, 2, "TO")
+    c.font      = Font(name="Calibri", bold=True, size=7, color=DK_GREY)
+    c.fill      = lgfill
+    c.alignment = left
+    c.border    = Border(left=thin, right=thin, top=thin)
+    cur += 1
+
+    client_row(client_name, is_name=True)
+    if addr.strip():
+        client_row(addr.replace("\n", ", "))
+    if email.strip():
+        client_row(email.strip())
+    if phone.strip():
+        client_row(phone.strip())
+
+    # Proposal for row
+    _prop = proposal_start.strip() if proposal_start.strip() else get_fy(datetime.now())
+    set_row_height(cur, 14)
+    merge(cur, 2, cur, 4)
+    c = ws.cell(cur, 2, f"Proposal for: {_prop}")
+    c.font      = Font(name="Calibri", bold=True, size=9)
+    c.fill      = lgfill
+    c.alignment = left
+    c.border    = Border(left=thin, right=thin, bottom=thin)
+    cur += 1
+
+    # ── Spacer ────────────────────────────────────────────────────────────────
+    set_row_height(cur, 6); cur += 1
+
+    # ── Fees table header ─────────────────────────────────────────────────────
+    set_row_height(cur, 18)
+    for col, val, wid in [(2,"Service",None),(3,"Description / Details",None),
+                           (4,"Annual Fees (Rs.)",None)]:
+        c = ws.cell(cur, col, val)
+        c.font      = hfont
+        c.fill      = hfill
+        c.alignment = ctr
+        c.border    = ba
+    cur += 1
+
+    # ── Fees rows ─────────────────────────────────────────────────────────────
+    data_start = cur
+    seen_svc   = {}
+    for idx, (_, row) in enumerate(df_main.iterrows()):
+        svc    = str(row.get("Service","")).strip()
+        detail = str(row.get("Details","")).strip()
+        amt    = parse_inr(row.get("Annual Fees (Rs.)","0"))
+        label  = "" if svc in seen_svc else svc
+        seen_svc[svc] = True
+        fill_r = wfill if idx % 2 == 0 else altfill
+        set_row_height(cur, 14)
+        for col, val, aln in [(2, label, vctr), (3, detail, vctr),
+                               (4, int(round(amt)), right)]:
+            c = ws.cell(cur, col, val)
+            c.font      = nfont
+            c.fill      = fill_r
+            c.alignment = aln
+            c.border    = ba
+            if col == 4:
+                c.number_format = u'[\u20b9]#,##,##0'
+        cur += 1
+
+    # ── Totals ────────────────────────────────────────────────────────────────
+    set_row_height(cur, 5); cur += 1  # spacer
+
+    disc_lbl = f"Discount ({int(discount_pct)}%)"
+    if discount_reason: disc_lbl += f" — {discount_reason}"
+    tot_rows = [
+        ("Subtotal",             subtotal,             False),
+        (disc_lbl,               -discount_amt,        False),
+        ("Taxable Amount",       subtotal-discount_amt, True),
+        (f"GST @ {GST_RATE}%",  gst_amt,              False),
+        ("GRAND TOTAL",          grand,                True),
+    ]
+    for lbl, amt, is_bold in tot_rows:
+        is_grand = lbl == "GRAND TOTAL"
+        set_row_height(cur, 16 if is_grand else 13)
+        ws.cell(cur, 2).border = Border(right=no_s)  # empty left col
+        merge(cur, 3, cur, 3)
+        c3 = ws.cell(cur, 3, lbl)
+        c3.font      = Font(name="Calibri", bold=is_bold or is_grand,
+                            size=10 if is_grand else 9,
+                            color=BLUE if is_grand else "000000")
+        c3.fill      = lbfill if is_grand else wfill
+        c3.alignment = left
+        c3.border    = Border(left=thin, top=thin, bottom=thin)
+        c4 = ws.cell(cur, 4, int(round(amt)))
+        c4.font         = Font(name="Calibri", bold=is_bold or is_grand,
+                               size=10 if is_grand else 9,
+                               color=BLUE if is_grand else "000000")
+        c4.fill         = lbfill if is_grand else wfill
+        c4.alignment    = right
+        c4.border       = Border(right=thin, top=thin, bottom=thin)
+        c4.number_format = u'[\u20b9]#,##,##0'
+        if is_grand:
+            c3.border = Border(left=Side(style="medium",color=BLUE),
+                                top=Side(style="medium",color=BLUE),
+                                bottom=Side(style="medium",color=BLUE))
+            c4.border = Border(right=Side(style="medium",color=BLUE),
+                                top=Side(style="medium",color=BLUE),
+                                bottom=Side(style="medium",color=BLUE))
+        cur += 1
+
+    # ── Spacer ────────────────────────────────────────────────────────────────
+    set_row_height(cur, 6); cur += 1
+
+    # ── Notes & Terms ─────────────────────────────────────────────────────────
+    notes = [
+        ("Notes & Terms",
+         True, True),
+        (f"1.  Our scope of engagement is strictly limited to the services "
+         f"enumerated above; any additional services shall be billed separately.",
+         False, False),
+        (f"2.  This quotation is valid for 15 days from the date of generation, "
+         f"i.e., up to {validity_date()}.",
+         False, False),
+        ("3.  Kindly sign and return this proposal as confirmation of your acceptance "
+         "of the terms and fees set out herein.",
+         False, False),
+        ("4.  Please refer to the Event-Based Charges sheet for fees applicable to "
+         "additional or incidental services.",
+         False, False),
+    ]
+    for text, is_heading, _ in notes:
+        h = 14 if is_heading else 28
+        set_row_height(cur, h)
+        merge(cur, 2, cur, 4)
+        c = ws.cell(cur, 2, text)
+        c.font      = Font(name="Calibri", bold=is_heading, size=8 if not is_heading else 9,
+                           color=DK_GREY)
+        c.fill      = afill
+        c.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
+        c.border    = Border(
+            left=Side(style="medium", color=AMB_BDR),
+            right=thin,
+            top=thin if is_heading else no_s,
+            bottom=thin if text == notes[-1][0] else no_s)
+        cur += 1
+
+    # ── Spacer ────────────────────────────────────────────────────────────────
+    set_row_height(cur, 6); cur += 1
+
+    # ── Signature block ───────────────────────────────────────────────────────
+    sig_start = cur
+    for r in range(cur, cur+6):
+        set_row_height(r, 14)
+    # Left: firm
+    merge(cur,   2, cur,   3); ws.cell(cur,   2, "For V. Purohit & Associates").font = bfont9
+    merge(cur+1, 2, cur+1, 3); ws.cell(cur+1, 2, "Chartered Accountants").font       = sfont
+    merge(cur+3, 2, cur+3, 3); ws.cell(cur+3, 2, "_"*30).font = nfont
+    merge(cur+4, 2, cur+4, 3); ws.cell(cur+4, 2, "Authorised Signatory").font        = bfont9
+    merge(cur+5, 2, cur+5, 3); ws.cell(cur+5, 2, datetime.now().strftime("%d %B %Y")).font = sfont
+    # Right: client
+    ws.cell(cur,   4, f"Accepted by: {client_name}").font = bfont9
+    ws.cell(cur+3, 4, "_"*30).font  = nfont
+    ws.cell(cur+4, 4, "Signature & Stamp").font = bfont9
+    ws.cell(cur+5, 4, "Date: _______________").font = sfont
+    for r in range(cur, cur+6):
+        for col in [2,3,4]:
+            ws.cell(r,col).fill      = lgfill
+            ws.cell(r,col).alignment = vctr
+    cur += 7
+
+    # ── Spacer ────────────────────────────────────────────────────────────────
+    set_row_height(cur, 6); cur += 1
+
+    # ── Footer band ───────────────────────────────────────────────────────────
+    set_row_height(cur, 5)
+    for col in range(1,6): ws.cell(cur,col).fill = hfill
+    cur += 1
+    set_row_height(cur, 14)
+    merge(cur, 1, cur, 5)
+    c = ws.cell(cur, 1,
+        "Office No. 5, Ground Floor, Adeshwar Arcade, Andheri-Kurla Road, "
+        "Andheri East, Mumbai - 400093  |  Email: office@vpurohit.com  |  +91-9867531510")
+    c.font      = ffont
+    c.fill      = PatternFill("solid", fgColor="F0F4F8")
+    c.alignment = ctr
+    c.border    = Border(top=Side(style="thin",color=BORDER_C))
+    cur += 1
+    set_row_height(cur, 4)
+    for col in range(1,6): ws.cell(cur,col).fill = hfill
+
+    # ── Print / sheet settings ────────────────────────────────────────────────
+    ws.print_area       = f"A1:E{cur}"
+    ws.page_margins.left  = 0.25
+    ws.page_margins.right = 0.25
+    ws.page_margins.top   = 0.25
+    ws.page_margins.bottom= 0.25
+    ws.sheet_view.showGridLines = False
+
+    # ── Event-based sheet ─────────────────────────────────────────────────────
     if not df_event.empty:
-        ws2 = wb.create_sheet("Event-based charges")
-        ws2.append(["Details","Fees (Rs.)"])
-        for h in (ws2["A1"],ws2["B1"]):
-            h.fill,h.font,h.alignment,h.border = hfill,hfont,ctr,ba
-        for _,r in df_event.iterrows():
-            detail = str(r.get("Details","")).strip() or str(r.get("Service","")).strip()
-            raw    = str(r.get("Annual Fees (Rs.)","")).strip()
-            ws2.append([detail, int(round(parse_inr(raw))) if raw else None])
-        for row in ws2.iter_rows(min_row=2,max_row=ws2.max_row):
-            row[1].number_format = '#,##,##0'
-            for cell in row: cell.border = ba
-        ws2.column_dimensions["A"].width = 60
-        ws2.column_dimensions["B"].width = 18
+        ws2 = wb.create_sheet("Event-Based Charges")
+        ws2.sheet_view.showGridLines = False
+        ws2.column_dimensions["A"].width = 3
+        ws2.column_dimensions["B"].width = 60
+        ws2.column_dimensions["C"].width = 20
+        ws2.column_dimensions["D"].width = 3
 
-    ws3 = wb.create_sheet("Cover")
-    for r in [["Client Name",client_name],["Entity Type",client_type],
-               ["Quotation No.",quote_no],
-               ["Date",datetime.now().strftime("%d-%b-%Y")],
-               ["Valid Until",validity_date()],["FY",get_fy(datetime.now())]]:
-        ws3.append(r)
-    ws3.column_dimensions["A"].width = 22
-    ws3.column_dimensions["B"].width = 50
+        # Blue header
+        for r in range(1,5):
+            ws2.row_dimensions[r].height = 10
+            for col in range(1,5): ws2.cell(r,col).fill = hfill
+        ws2.merge_cells("B1:C4")
+        c = ws2.cell(1,2,"V. Purohit & Associates — Event-Based Charges")
+        c.font = Font(name="Calibri",bold=True,size=12,color=WHITE)
+        c.alignment = ctr; c.fill = hfill
+
+        ws2.row_dimensions[5].height = 8
+
+        # Sub-heading
+        ws2.row_dimensions[6].height = 14
+        ws2.merge_cells("B6:C6")
+        c = ws2.cell(6,2,"The following charges apply as and when events occur "
+                         "and are not included in the annual fees.")
+        c.font = Font(name="Calibri",size=8,color=DK_GREY,italic=True)
+        c.alignment = Alignment(horizontal="left",vertical="center",wrap_text=True)
+        c.fill = afill
+
+        ws2.row_dimensions[7].height = 8
+
+        # Table header
+        ws2.row_dimensions[8].height = 18
+        for col, val in [(2,"Service / Description"),(3,"Applicable Fees (Rs.)")]:
+            c = ws2.cell(8,col,val)
+            c.font=hfont; c.fill=hfill; c.alignment=ctr; c.border=ba
+
+        er = 9
+        for idx, (_, row) in enumerate(df_event.iterrows()):
+            detail = str(row.get("Details","")).strip() or str(row.get("Service","")).strip()
+            raw    = str(row.get("Annual Fees (Rs.)","")).strip()
+            amt    = int(round(parse_inr(raw))) if raw else None
+            ws2.row_dimensions[er].height = 14
+            fill_r = wfill if idx % 2 == 0 else altfill
+            c2 = ws2.cell(er,2,detail)
+            c2.font=nfont; c2.fill=fill_r; c2.alignment=vctr; c2.border=ba
+            c3 = ws2.cell(er,3,amt)
+            c3.font=nfont; c3.fill=fill_r; c3.alignment=right; c3.border=ba
+            if amt: c3.number_format = u'[\u20b9]#,##,##0'
+            er += 1
+
+        # Footer
+        ws2.row_dimensions[er].height = 5
+        for col in range(1,5): ws2.cell(er,col).fill = hfill
+        er += 1
+        ws2.row_dimensions[er].height = 14
+        ws2.merge_cells(f"A{er}:D{er}")
+        c = ws2.cell(er,1,"office@vpurohit.com  |  +91-9867531510")
+        c.font=ffont; c.fill=PatternFill("solid",fgColor="F0F4F8"); c.alignment=ctr
 
     bio = io.BytesIO(); wb.save(bio); return bio.getvalue()
+
 
 
 # ── Session state ─────────────────────────────────────────────────────────────
@@ -1245,7 +1590,11 @@ with t1:
                     filtered, st.session_state["event_df"],
                     st.session_state["client_name"], st.session_state["client_type"],
                     st.session_state["quote_no"],
-                    subtotal, dp, disc_amt, gst_amt, grand, dr)
+                    subtotal, dp, disc_amt, gst_amt, grand, dr,
+                    addr=st.session_state.get("client_addr",""),
+                    email=st.session_state.get("client_email",""),
+                    phone=st.session_state.get("client_phone",""),
+                    proposal_start=st.session_state.get("proposal_start",""))
                 st.download_button("📊 Download Excel", data=xls,
                     file_name=f"Proposal_{st.session_state['client_name'].replace(' ','_')}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
